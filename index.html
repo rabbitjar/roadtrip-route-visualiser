@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Moto Route — podgląd trasy</title>
+<link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet" />
+<style>
+  :root {
+    --ink: #1b1f23;
+    --paper: #faf9f7;
+    --line: #dcd7cf;
+    --accent: #2d6a4f;
+    --accent-ink: #ffffff;
+    --err: #b3261e;
+    --route: #ff4d1f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, "Segoe UI", sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    padding: 16px;
+    line-height: 1.4;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 4px; }
+  p.sub { color: #5b5f63; margin: 0 0 18px; font-size: 0.9rem; }
+  textarea {
+    width: 100%;
+    min-height: 70px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    resize: vertical;
+    background: #fff;
+  }
+  button {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    margin-top: 10px;
+    font-size: 1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; }
+  .card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 14px;
+  }
+  .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: #5b5f63; margin: 0 0 8px; }
+  .stat { display: flex; justify-content: space-between; font-size: 0.92rem; padding: 3px 0; }
+  .err { color: var(--err); font-size: 0.9rem; white-space: pre-wrap; }
+  #map {
+    width: 100%;
+    height: 55vh;
+    border-radius: 8px;
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<h1>Podgląd trasy motocyklowej</h1>
+<p class="sub">Wklej pełny link Google Maps z trasą. Krótkie linki (maps.app.goo.gl) otwórz najpierw w przeglądarce i skopiuj pełny URL z paska adresu.</p>
+
+<textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..."></textarea>
+
+<button id="parseBtn">1. Wyciągnij punkty z linku</button>
+<button id="routeBtn" disabled>2. Pokaż trasę na mapie</button>
+
+<div id="waypointsCard" class="card" style="display:none">
+  <h2>Punkty trasy</h2>
+  <div id="waypointsList" style="font-size:0.9rem"></div>
+</div>
+
+<div id="routeCard" class="card" style="display:none">
+  <h2>Trasa</h2>
+  <div class="stat"><span>Dystans drogowy</span><strong id="statDist">—</strong></div>
+  <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
+</div>
+
+<div id="errorBox" class="card" style="display:none">
+  <h2 style="color:#b3261e">Błąd</h2>
+  <div class="err" id="errorText"></div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script>
+"use strict";
+
+/* ---------- 1) Parser linku Google Maps ---------- */
+const TRAVEL_MODE_MAP = { 0: "driving", 1: "walking", 2: "bicycling", 3: "transit" };
+
+function parseGoogleMapsLink(url) {
+  const { pathname } = new URL(url);
+
+  const pathMatch = pathname.match(/\/maps\/dir\/(.+?)\/data=/);
+  const names = pathMatch
+    ? pathMatch[1]
+        .split("/")
+        .filter((seg) => !seg.startsWith("@"))
+        .map((seg) => decodeURIComponent(seg).replace(/\+/g, " "))
+        .map((seg) => seg.split(",")[0].trim())
+    : [];
+
+  const coords = [];
+  const reA = /!8m2!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/g;
+  let m;
+  while ((m = reA.exec(url)) !== null) {
+    coords.push({ lat: parseFloat(m[1]), lng: parseFloat(m[2]) });
+  }
+  if (coords.length === 0) {
+    const reB = /!1d(-?\d+\.\d+)!2d(-?\d+\.\d+)/g;
+    while ((m = reB.exec(url)) !== null) {
+      coords.push({ lat: parseFloat(m[2]), lng: parseFloat(m[1]) });
+    }
+  }
+  if (coords.length === 0) {
+    throw new Error(
+      "Nie znalazłem żadnych współrzędnych w tym linku.\n" +
+      "- jeśli to krótki link (maps.app.goo.gl), otwórz go najpierw w przeglądarce i wklej pełny URL,\n" +
+      "- to może być link do pojedynczego miejsca, a nie do trasy."
+    );
+  }
+
+  const waypoints = coords.map((c, i) => ({
+    name: names[i] ?? `Punkt ${i + 1}`,
+    lat: c.lat,
+    lng: c.lng,
+  }));
+
+  const modeMatch = url.match(/!3e(\d)/);
+  const travelMode = modeMatch ? (TRAVEL_MODE_MAP[modeMatch[1]] ?? "unknown") : "unknown";
+  return { travelMode, waypoints };
+}
+
+/* ---------- 2) Realny routing (OSRM demo) ---------- */
+const OSRM_DEMO_BASE = "https://router.project-osrm.org/route/v1/driving";
+
+async function fetchRoadRoute(waypoints) {
+  const coordsParam = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
+  const url = `${OSRM_DEMO_BASE}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Serwer routingu zwrócił błąd HTTP ${res.status}.`);
+  const data = await res.json();
+  if (data.code !== "Ok" || !data.routes?.length) {
+    throw new Error(`Nie udało się policzyć trasy (code: ${data.code}).`);
+  }
+  const route = data.routes[0];
+  return {
+    coordinates: route.geometry.coordinates, // [[lng,lat], ...]
+    distanceMeters: route.distance,
+    durationSeconds: route.duration,
+  };
+}
+
+/* ---------- 3) Mapa (MapLibre + OpenFreeMap, bez klucza) ---------- */
+let map = null;
+
+function showRouteOnMap(coordinates, waypoints) {
+  const mapEl = document.getElementById("map");
+  mapEl.style.display = "block";
+
+  const geojson = {
+    type: "Feature",
+    geometry: { type: "LineString", coordinates },
+  };
+
+  if (!map) {
+    map = new maplibregl.Map({
+      container: "map",
+      style: "https://tiles.openfreemap.org/styles/positron",
+      center: coordinates[0],
+      zoom: 5,
+    });
+
+    map.on("load", () => {
+      map.addSource("route", { type: "geojson", data: geojson });
+      map.addLayer({
+        id: "route-line",
+        type: "line",
+        source: "route",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: { "line-color": "#ff4d1f", "line-width": 4 },
+      });
+
+      waypoints.forEach((w) => {
+        new maplibregl.Marker({ color: "#1b1f23" })
+          .setLngLat([w.lng, w.lat])
+          .setPopup(new maplibregl.Popup({ offset: 12 }).setText(w.name))
+          .addTo(map);
+      });
+
+      fitToRoute(coordinates);
+    });
+  } else {
+    map.getSource("route").setData(geojson);
+    document.querySelectorAll(".maplibregl-marker").forEach((el) => el.remove());
+    waypoints.forEach((w) => {
+      new maplibregl.Marker({ color: "#1b1f23" })
+        .setLngLat([w.lng, w.lat])
+        .setPopup(new maplibregl.Popup({ offset: 12 }).setText(w.name))
+        .addTo(map);
+    });
+    fitToRoute(coordinates);
+  }
+}
+
+function fitToRoute(coordinates) {
+  const bounds = coordinates.reduce(
+    (b, c) => b.extend(c),
+    new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
+  );
+  map.fitBounds(bounds, { padding: 40, duration: 0 });
+}
+
+/* ---------- 4) Podpięcie UI ---------- */
+let lastWaypoints = null;
+
+function showError(msg) {
+  document.getElementById("errorBox").style.display = "block";
+  document.getElementById("errorText").textContent = msg;
+}
+function hideError() {
+  document.getElementById("errorBox").style.display = "none";
+}
+
+document.getElementById("parseBtn").addEventListener("click", () => {
+  hideError();
+  const url = document.getElementById("linkInput").value.trim();
+  try {
+    const { waypoints } = parseGoogleMapsLink(url);
+    lastWaypoints = waypoints;
+    document.getElementById("waypointsList").innerHTML =
+      waypoints.map((w) => `${w.name} (${w.lat.toFixed(3)}, ${w.lng.toFixed(3)})`).join("<br>");
+    document.getElementById("waypointsCard").style.display = "block";
+    document.getElementById("routeBtn").disabled = false;
+  } catch (e) {
+    showError(e.message);
+    document.getElementById("routeBtn").disabled = true;
+  }
+});
+
+document.getElementById("routeBtn").addEventListener("click", async () => {
+  if (!lastWaypoints) return;
+  hideError();
+  const btn = document.getElementById("routeBtn");
+  btn.disabled = true;
+  btn.textContent = "Liczę trasę…";
+  try {
+    const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(lastWaypoints);
+    document.getElementById("statDist").textContent = `${(distanceMeters / 1000).toFixed(0)} km`;
+    document.getElementById("statDur").textContent = `${(durationSeconds / 3600).toFixed(1)} h`;
+    document.getElementById("routeCard").style.display = "block";
+    showRouteOnMap(coordinates, lastWaypoints);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "2. Pokaż trasę na mapie";
+  }
+});
+</script>
+</body>
+</html>
