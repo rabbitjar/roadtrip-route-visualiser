@@ -109,14 +109,31 @@ function parseGoogleMapsLink(url) {
 
   const pathMatch = pathname.match(/\/maps\/dir\/(.+?)\/data=/);
   const names = pathMatch
-    ? pathMatch[1].split("/").map((seg) => decodeURIComponent(seg).replace(/\+/g, " "))
+    ? pathMatch[1]
+        .split("/")
+        .filter((seg) => !seg.startsWith("@")) // pomiń segment widoku mapy, np. @48.86,11.49,6z
+        .map((seg) => decodeURIComponent(seg).replace(/\+/g, " "))
+        .map((seg) => seg.split(",")[0].trim()) // zostaw samą nazwę miejsca, nie pełny adres
     : [];
 
-  const coordRe = /!8m2!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/g;
+  // Google używa co najmniej dwóch różnych, nieudokumentowanych formatów
+  // współrzędnych w zależności od tego, jak dokładnie powstał URL:
+
+  // Format A: !8m2!3d{lat}!4d{lng} — widziany na "surowym" linku po rozwinięciu przekierowania
   const coords = [];
+  const reA = /!8m2!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/g;
   let m;
-  while ((m = coordRe.exec(url)) !== null) {
+  while ((m = reA.exec(url)) !== null) {
     coords.push({ lat: parseFloat(m[1]), lng: parseFloat(m[2]) });
+  }
+
+  // Format B: !1d{lng}!2d{lat} — widziany, gdy aplikacja Google Maps
+  // w pełni doładuje się w przeglądarce i sama przepisze URL
+  if (coords.length === 0) {
+    const reB = /!1d(-?\d+\.\d+)!2d(-?\d+\.\d+)/g;
+    while ((m = reB.exec(url)) !== null) {
+      coords.push({ lat: parseFloat(m[2]), lng: parseFloat(m[1]) });
+    }
   }
 
   if (coords.length === 0) {
@@ -125,7 +142,7 @@ function parseGoogleMapsLink(url) {
       "Możliwe przyczyny:\n" +
       "- to wciąż krótki link (maps.app.goo.gl) — otwórz go najpierw w przeglądarce i wklej pełny URL z paska adresu,\n" +
       "- to link do pojedynczego miejsca, a nie do trasy (Directions),\n" +
-      "- Google zmienił format URL-a."
+      "- Google użył formatu URL-a innego niż te dwa, które już znamy."
     );
   }
 
