@@ -282,12 +282,32 @@ function resampleByDistance(coords, cum, numPoints) {
   return result;
 }
 
+// dla każdego przystanku znajdź najbliższy punkt na trasie i jego dystans-wzdłuż-trasy
+// (waypointy pochodzą z linku Google, trasa z OSRM — mogą się nieznacznie różnić,
+// więc szukamy najbliższego dopasowania zamiast zakładać identyczne współrzędne)
+function distanceAlongForWaypoint(coords, cum, waypointLngLat) {
+  let bestDist = Infinity;
+  let bestCum = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const d = haversineMeters(coords[i], waypointLngLat);
+    if (d < bestDist) {
+      bestDist = d;
+      bestCum = cum[i];
+    }
+  }
+  return bestCum;
+}
+
 /* ---------- 4) Ikona motocykla (SVG -> rastrowany obraz dla MapLibre) ---------- */
 const MOTO_SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <circle cx="32" cy="48" r="9" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
-  <circle cx="32" cy="17" r="7" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
-  <path d="M32,4 L41,19 L37,46 L27,46 L23,19 Z" fill="#ff4d1f" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M26,20 L38,20 L35,41 L29,41 Z" fill="#ff4d1f" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+  <rect x="25" y="34" width="14" height="9" rx="3.5" fill="#1b1f23" stroke="#ffffff" stroke-width="1.5"/>
+  <circle cx="32" cy="49" r="9.5" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="32" cy="49" r="3.2" fill="#ffffff"/>
+  <circle cx="32" cy="15" r="7" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="32" cy="15" r="2.4" fill="#ffffff"/>
+  <line x1="18" y1="11" x2="46" y2="11" stroke="#1b1f23" stroke-width="4.5" stroke-linecap="round"/>
 </svg>`.trim();
 
 function loadMotoIcon(mapInstance) {
@@ -311,10 +331,48 @@ let map = null;
 let lastRouteCoordinates = null;
 let animationRunning = false;
 let selectedDuration = 7;
+let waypointMarkers = []; // { marker, distanceAlong, visible }
+
+function rebuildWaypointMarkers(coordinates, cum, waypoints) {
+  waypointMarkers.forEach((wm) => wm.marker.remove());
+  waypointMarkers = waypoints.map((w) => ({
+    marker: new maplibregl.Marker({ color: "#1b1f23" })
+      .setLngLat([w.lng, w.lat])
+      .setPopup(new maplibregl.Popup({ offset: 12 }).setText(w.name)),
+    distanceAlong: distanceAlongForWaypoint(coordinates, cum, [w.lng, w.lat]),
+    visible: false,
+  }));
+}
+
+function showAllWaypointMarkers() {
+  waypointMarkers.forEach((wm) => {
+    if (!wm.visible) {
+      wm.marker.addTo(map);
+      wm.visible = true;
+    }
+  });
+}
+
+function hideAllWaypointMarkers() {
+  waypointMarkers.forEach((wm) => {
+    wm.marker.remove();
+    wm.visible = false;
+  });
+}
+
+function revealWaypointMarkersUpTo(distanceAlong) {
+  waypointMarkers.forEach((wm) => {
+    if (!wm.visible && distanceAlong >= wm.distanceAlong) {
+      wm.marker.addTo(map);
+      wm.visible = true;
+    }
+  });
+}
 
 function showRouteOnMap(coordinates, waypoints) {
   const mapEl = document.getElementById("map");
   mapEl.style.display = "block";
+  const cum = buildCumulativeDistances(coordinates);
 
   const geojson = {
     type: "Feature",
@@ -373,24 +431,15 @@ function showRouteOnMap(coordinates, waypoints) {
       setLayerVisible("moto-marker", false);
       setLayerVisible("trail-line", false);
 
-      waypoints.forEach((w) => {
-        new maplibregl.Marker({ color: "#1b1f23" })
-          .setLngLat([w.lng, w.lat])
-          .setPopup(new maplibregl.Popup({ offset: 12 }).setText(w.name))
-          .addTo(map);
-      });
+      rebuildWaypointMarkers(coordinates, cum, waypoints);
+      showAllWaypointMarkers();
 
       fitToRoute(coordinates);
     });
   } else {
     map.getSource("route").setData(geojson);
-    document.querySelectorAll(".maplibregl-marker").forEach((el) => el.remove());
-    waypoints.forEach((w) => {
-      new maplibregl.Marker({ color: "#1b1f23" })
-        .setLngLat([w.lng, w.lat])
-        .setPopup(new maplibregl.Popup({ offset: 12 }).setText(w.name))
-        .addTo(map);
-    });
+    rebuildWaypointMarkers(coordinates, cum, waypoints);
+    showAllWaypointMarkers();
     fitToRoute(coordinates);
   }
 }
@@ -422,11 +471,12 @@ async function animateRoute(coordinates, durationSeconds) {
   const cum = buildCumulativeDistances(animCoords);
   const total = cum[cum.length - 1];
 
-  // trasa niewidoczna na starcie, motocykl w punkcie startowym
+  // trasa i przystanki niewidoczne na starcie, motocykl w punkcie startowym
   setLayerVisible("route-line", false);
   setLayerVisible("trail-line", true);
   setLayerVisible("moto-marker", true);
   map.getSource("trail").setData({ type: "Feature", geometry: { type: "LineString", coordinates: [] } });
+  hideAllWaypointMarkers();
 
   let lastHeading = headingAtDistance(animCoords, cum, 0) ?? 0;
   const startTime = performance.now();
@@ -443,19 +493,25 @@ async function animateRoute(coordinates, durationSeconds) {
       const heading = headingAtDistance(animCoords, cum, distAlong);
       if (heading !== null) lastHeading = heading;
 
+      // subtelne drganie kierunku ("nervous" ruch) — czysto wizualne, NIE wpływa
+      // na rzeczywistą (płynną) pozycję wzdłuż trasy, więc nie wraca zacinanie się
+      const wobble = Math.sin(elapsed * 12) * 5;
+
       map.getSource("moto").setData({
         type: "Feature",
         geometry: { type: "Point", coordinates: pos },
-        properties: { bearing: lastHeading },
+        properties: { bearing: lastHeading + wobble },
       });
       map.getSource("trail").setData({
         type: "Feature",
         geometry: { type: "LineString", coordinates: trailUpToDistance(animCoords, cum, distAlong) },
       });
+      revealWaypointMarkersUpTo(distAlong);
 
       if (progress < 1) {
         requestAnimationFrame(frame);
       } else {
+        showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
         animationRunning = false;
         resolve();
       }
