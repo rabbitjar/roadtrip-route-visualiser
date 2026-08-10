@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Test trasy — sprawdzarka linku Google Maps</title>
+<style>
+  :root {
+    --ink: #1b1f23;
+    --paper: #faf9f7;
+    --line: #dcd7cf;
+    --accent: #2d6a4f;
+    --accent-ink: #ffffff;
+    --err: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Roboto, "Segoe UI", sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    padding: 16px;
+    line-height: 1.4;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 4px; }
+  p.sub { color: #5b5f63; margin: 0 0 18px; font-size: 0.9rem; }
+  textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    resize: vertical;
+    background: #fff;
+  }
+  button {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    margin-top: 10px;
+    font-size: 1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; }
+  button.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  .card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 14px;
+  }
+  .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: #5b5f63; margin: 0 0 8px; }
+  ol.wp { margin: 0; padding-left: 18px; font-size: 0.92rem; }
+  ol.wp li { margin-bottom: 4px; }
+  .stat { display: flex; justify-content: space-between; font-size: 0.92rem; padding: 3px 0; }
+  .err { color: var(--err); font-size: 0.9rem; white-space: pre-wrap; }
+  canvas { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .hint { font-size: 0.82rem; color: #5b5f63; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Sprawdzarka trasy z Google Maps</h1>
+<p class="sub">Narzędzie testowe — sprawdza, czy z linku da się wyciągnąć punkty i policzyć realną trasę drogową. Działa w całości w tej przeglądarce, bez instalowania czegokolwiek.</p>
+
+<textarea id="linkInput" placeholder="Wklej PEŁNY link Google Maps (google.com/maps/dir/...). Jeśli masz krótki link (maps.app.goo.gl/...), otwórz go najpierw w przeglądarce i skopiuj z paska adresu pełny URL."></textarea>
+
+<button id="parseBtn">1. Wyciągnij punkty z linku</button>
+<button id="routeBtn" class="secondary" disabled>2. Policz realną trasę drogową</button>
+
+<div id="waypointsCard" class="card" style="display:none">
+  <h2>Punkty trasy</h2>
+  <ol class="wp" id="waypointsList"></ol>
+</div>
+
+<div id="routeCard" class="card" style="display:none">
+  <h2>Realna trasa (OSRM)</h2>
+  <div class="stat"><span>Dystans drogowy</span><strong id="statDist">—</strong></div>
+  <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
+  <div class="stat"><span>Punktów geometrii</span><strong id="statPts">—</strong></div>
+  <canvas id="routeCanvas" width="600" height="600"></canvas>
+  <p class="hint">Zielona linia = realna droga. Kropki = Twoje punkty z Google Maps.</p>
+</div>
+
+<div id="errorBox" class="card" style="display:none">
+  <h2 style="color:#b3261e">Błąd</h2>
+  <div class="err" id="errorText"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- 1) Parser linku Google Maps ---------- */
+const TRAVEL_MODE_MAP = { 0: "driving", 1: "walking", 2: "bicycling", 3: "transit" };
+
+function parseGoogleMapsLink(url) {
+  const { pathname } = new URL(url);
+
+  const pathMatch = pathname.match(/\/maps\/dir\/(.+?)\/data=/);
+  const names = pathMatch
+    ? pathMatch[1].split("/").map((seg) => decodeURIComponent(seg).replace(/\+/g, " "))
+    : [];
+
+  const coordRe = /!8m2!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/g;
+  const coords = [];
+  let m;
+  while ((m = coordRe.exec(url)) !== null) {
+    coords.push({ lat: parseFloat(m[1]), lng: parseFloat(m[2]) });
+  }
+
+  if (coords.length === 0) {
+    throw new Error(
+      "Nie znalazłem żadnych współrzędnych w tym linku.\n" +
+      "Możliwe przyczyny:\n" +
+      "- to wciąż krótki link (maps.app.goo.gl) — otwórz go najpierw w przeglądarce i wklej pełny URL z paska adresu,\n" +
+      "- to link do pojedynczego miejsca, a nie do trasy (Directions),\n" +
+      "- Google zmienił format URL-a."
+    );
+  }
+
+  const waypoints = coords.map((c, i) => ({
+    name: names[i] ?? `Punkt ${i + 1}`,
+    lat: c.lat,
+    lng: c.lng,
+  }));
+
+  const modeMatch = url.match(/!3e(\d)/);
+  const travelMode = modeMatch ? (TRAVEL_MODE_MAP[modeMatch[1]] ?? "unknown") : "unknown";
+
+  return { travelMode, waypoints };
+}
+
+/* ---------- 2) Realny routing (OSRM demo) ---------- */
+const OSRM_DEMO_BASE = "https://router.project-osrm.org/route/v1/driving";
+
+async function fetchRoadRoute(waypoints) {
+  const coordsParam = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
+  const url = `${OSRM_DEMO_BASE}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Serwer routingu zwrócił błąd HTTP ${res.status}. Spróbuj ponownie za chwilę (darmowe demo bywa przeciążone).`);
+  }
+  const data = await res.json();
+  if (data.code !== "Ok" || !data.routes?.length) {
+    throw new Error(`Nie udało się policzyć trasy (code: ${data.code}). Któryś punkt może być za daleko od drogi.`);
+  }
+  const route = data.routes[0];
+  return {
+    coordinates: route.geometry.coordinates, // [[lng,lat], ...]
+    distanceMeters: route.distance,
+    durationSeconds: route.duration,
+  };
+}
+
+/* ---------- 3) Podgląd na canvasie ---------- */
+function drawRoute(coordinates, waypoints) {
+  const canvas = document.getElementById("routeCanvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height, PAD = 30;
+
+  const lats = coordinates.map((c) => c[1]);
+  const lngs = coordinates.map((c) => c[0]);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+
+  // prosta korekta na zniekształcenie (szerokość geograficzna ściska długość)
+  const midLat = (minLat + maxLat) / 2;
+  const lngScale = Math.cos((midLat * Math.PI) / 180);
+
+  const spanX = (maxLng - minLng) * lngScale || 1;
+  const spanY = (maxLat - minLat) || 1;
+  const scale = Math.min((W - 2 * PAD) / spanX, (H - 2 * PAD) / spanY);
+
+  function project([lng, lat]) {
+    const x = PAD + (lng - minLng) * lngScale * scale;
+    const y = H - PAD - (lat - minLat) * scale;
+    return [x, y];
+  }
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = "#2d6a4f";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  coordinates.forEach((c, i) => {
+    const [x, y] = project(c);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  ctx.fillStyle = "#b3261e";
+  waypoints.forEach((w) => {
+    const [x, y] = project([w.lng, w.lat]);
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+/* ---------- 4) Podpięcie UI ---------- */
+let lastWaypoints = null;
+
+function showError(msg) {
+  document.getElementById("errorBox").style.display = "block";
+  document.getElementById("errorText").textContent = msg;
+}
+function hideError() {
+  document.getElementById("errorBox").style.display = "none";
+}
+
+document.getElementById("parseBtn").addEventListener("click", () => {
+  hideError();
+  document.getElementById("routeCard").style.display = "none";
+  const url = document.getElementById("linkInput").value.trim();
+  try {
+    const { waypoints, travelMode } = parseGoogleMapsLink(url);
+    lastWaypoints = waypoints;
+
+    const list = document.getElementById("waypointsList");
+    list.innerHTML = "";
+    waypoints.forEach((w) => {
+      const li = document.createElement("li");
+      li.textContent = `${w.name} (${w.lat.toFixed(4)}, ${w.lng.toFixed(4)})`;
+      list.appendChild(li);
+    });
+    document.getElementById("waypointsCard").style.display = "block";
+    document.getElementById("routeBtn").disabled = false;
+  } catch (e) {
+    showError(e.message);
+    document.getElementById("routeBtn").disabled = true;
+  }
+});
+
+document.getElementById("routeBtn").addEventListener("click", async () => {
+  if (!lastWaypoints) return;
+  hideError();
+  const btn = document.getElementById("routeBtn");
+  btn.disabled = true;
+  btn.textContent = "Liczę trasę…";
+  try {
+    const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(lastWaypoints);
+    document.getElementById("statDist").textContent = `${(distanceMeters / 1000).toFixed(0)} km`;
+    document.getElementById("statDur").textContent = `${(durationSeconds / 3600).toFixed(1)} h`;
+    document.getElementById("statPts").textContent = coordinates.length;
+    document.getElementById("routeCard").style.display = "block";
+    drawRoute(coordinates, lastWaypoints);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "2. Policz realną trasę drogową";
+  }
+});
+</script>
+</body>
+</html>
