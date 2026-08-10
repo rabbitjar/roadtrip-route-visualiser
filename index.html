@@ -62,12 +62,33 @@
   .err { color: var(--err); font-size: 0.9rem; white-space: pre-wrap; }
   #map {
     width: 100%;
-    height: 55vh;
+    max-width: 420px;
+    aspect-ratio: 9 / 16;
     border-radius: 8px;
-    margin-top: 14px;
+    margin: 14px auto 0;
     border: 1px solid var(--line);
     display: none;
   }
+  .duration-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .duration-btn {
+    flex: 1;
+    margin-top: 0;
+    padding: 10px;
+    font-size: 0.9rem;
+    background: #fff;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  .duration-btn.active {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+  }
+  #animateBtn { background: var(--route); }
 </style>
 </head>
 <body>
@@ -79,6 +100,13 @@
 
 <button id="parseBtn">1. Wyciągnij punkty z linku</button>
 <button id="routeBtn" disabled>2. Pokaż trasę na mapie</button>
+
+<div class="duration-row">
+  <button class="duration-btn" data-duration="5">5 s</button>
+  <button class="duration-btn active" data-duration="7">7 s</button>
+  <button class="duration-btn" data-duration="10">10 s</button>
+</div>
+<button id="animateBtn" disabled>3. Animuj przejazd</button>
 
 <div id="waypointsCard" class="card" style="display:none">
   <h2>Punkty trasy</h2>
@@ -168,8 +196,106 @@ async function fetchRoadRoute(waypoints) {
   };
 }
 
-/* ---------- 3) Mapa (MapLibre + OpenFreeMap, bez klucza) ---------- */
+/* ---------- 3) Matematyka animacji: dystans, interpolacja, heading ---------- */
+function haversineMeters([lng1, lat1], [lng2, lat2]) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function buildCumulativeDistances(coords) {
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) {
+    cum.push(cum[i - 1] + haversineMeters(coords[i - 1], coords[i]));
+  }
+  return cum;
+}
+
+// binary search: indeks pierwszego punktu, którego dystans skumulowany >= dist
+function indexAtDistance(cum, dist) {
+  let lo = 0, hi = cum.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] < dist) lo = mid + 1; else hi = mid;
+  }
+  return Math.max(1, lo);
+}
+
+// pozycja po przebyciu `dist` metrów wzdłuż trasy — liniowa interpolacja
+// między dwoma najbliższymi punktami geometrii drogowej
+function positionAtDistance(coords, cum, dist) {
+  const total = cum[cum.length - 1];
+  dist = Math.max(0, Math.min(dist, total));
+  const i = indexAtDistance(cum, dist);
+  const segStart = cum[i - 1], segEnd = cum[i];
+  const t = segEnd === segStart ? 0 : (dist - segStart) / (segEnd - segStart);
+  const [lng1, lat1] = coords[i - 1];
+  const [lng2, lat2] = coords[i];
+  return [lng1 + (lng2 - lng1) * t, lat1 + (lat2 - lat1) * t];
+}
+
+function bearingDegrees([lng1, lat1], [lng2, lat2]) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+  const y = Math.sin(toRad(lng2 - lng1)) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lng2 - lng1));
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+// heading liczony na trasie INTERPOLOWANEJ (nie z surowych punktów GPX/OSRM),
+// żeby gęste/nierówne punkty nie powodowały "drgania" ikony
+function headingAtDistance(coords, cum, dist, lookaheadM = 50) {
+  const total = cum[cum.length - 1];
+  const p1 = positionAtDistance(coords, cum, dist);
+  const p2 = positionAtDistance(coords, cum, Math.min(dist + lookaheadM, total));
+  if (p1[0] === p2[0] && p1[1] === p2[1]) return null;
+  return bearingDegrees(p1, p2);
+}
+
+// trasa "narysowana dotąd" — pełne punkty do bieżącej pozycji + dokładny punkt bieżący
+function trailUpToDistance(coords, cum, dist) {
+  const i = indexAtDistance(cum, dist);
+  const trail = coords.slice(0, i);
+  trail.push(positionAtDistance(coords, cum, dist));
+  return trail;
+}
+
+/* ---------- 4) Ikona motocykla (SVG -> rastrowany obraz dla MapLibre) ---------- */
+const MOTO_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <circle cx="32" cy="48" r="9" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="32" cy="17" r="7" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
+  <path d="M32,4 L41,19 L37,46 L27,46 L23,19 Z" fill="#ff4d1f" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>`.trim();
+
+function loadMotoIcon(mapInstance) {
+  return new Promise((resolve, reject) => {
+    if (mapInstance.hasImage("moto-icon")) return resolve();
+    const img = new Image(128, 128);
+    const blob = new Blob([MOTO_SVG], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      mapInstance.addImage("moto-icon", img);
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+/* ---------- 5) Mapa (MapLibre + OpenFreeMap, bez klucza) ---------- */
 let map = null;
+let lastRouteCoordinates = null;
+let animationRunning = false;
+let selectedDuration = 7;
 
 function showRouteOnMap(coordinates, waypoints) {
   const mapEl = document.getElementById("map");
@@ -188,7 +314,7 @@ function showRouteOnMap(coordinates, waypoints) {
       zoom: 5,
     });
 
-    map.on("load", () => {
+    map.on("load", async () => {
       map.addSource("route", { type: "geojson", data: geojson });
       map.addLayer({
         id: "route-line",
@@ -197,6 +323,40 @@ function showRouteOnMap(coordinates, waypoints) {
         layout: { "line-join": "round", "line-cap": "round" },
         paint: { "line-color": "#ff4d1f", "line-width": 4 },
       });
+
+      // źródła pod animację: ślad (rysowany dotąd) + punkt motocykla
+      map.addSource("trail", {
+        type: "geojson",
+        data: { type: "Feature", geometry: { type: "LineString", coordinates: [] } },
+      });
+      map.addLayer({
+        id: "trail-line",
+        type: "line",
+        source: "trail",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: { "line-color": "#ff4d1f", "line-width": 4 },
+      });
+
+      map.addSource("moto", {
+        type: "geojson",
+        data: { type: "Feature", geometry: { type: "Point", coordinates: coordinates[0] }, properties: { bearing: 0 } },
+      });
+      await loadMotoIcon(map);
+      map.addLayer({
+        id: "moto-marker",
+        type: "symbol",
+        source: "moto",
+        layout: {
+          "icon-image": "moto-icon",
+          "icon-size": 0.75,
+          "icon-rotate": ["get", "bearing"],
+          "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+      });
+      setLayerVisible("moto-marker", false);
+      setLayerVisible("trail-line", false);
 
       waypoints.forEach((w) => {
         new maplibregl.Marker({ color: "#1b1f23" })
@@ -225,7 +385,65 @@ function fitToRoute(coordinates) {
     (b, c) => b.extend(c),
     new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
   );
+  // "Full route" tryb kamery: dopasuj kadr RAZ, przed animacją — bez zoomowania w trakcie jazdy
   map.fitBounds(bounds, { padding: 40, duration: 0 });
+}
+
+function setLayerVisible(layerId, visible) {
+  if (map.getLayer(layerId)) {
+    map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+  }
+}
+
+async function animateRoute(coordinates, durationSeconds) {
+  if (animationRunning) return;
+  animationRunning = true;
+
+  await loadMotoIcon(map);
+
+  const cum = buildCumulativeDistances(coordinates);
+  const total = cum[cum.length - 1];
+
+  // trasa niewidoczna na starcie, motocykl w punkcie startowym
+  setLayerVisible("route-line", false);
+  setLayerVisible("trail-line", true);
+  setLayerVisible("moto-marker", true);
+  map.getSource("trail").setData({ type: "Feature", geometry: { type: "LineString", coordinates: [] } });
+
+  let lastHeading = headingAtDistance(coordinates, cum, 0) ?? 0;
+  const startTime = performance.now();
+
+  return new Promise((resolve) => {
+    function frame(now) {
+      // KLUCZOWE: postęp liczony z czasu zegarowego, nie z liczby klatek —
+      // ta sama animacja trwa dokładnie `durationSeconds` niezależnie od 60/90/120 Hz ekranu
+      const elapsed = (now - startTime) / 1000;
+      const progress = Math.min(elapsed / durationSeconds, 1);
+      const distAlong = progress * total;
+
+      const pos = positionAtDistance(coordinates, cum, distAlong);
+      const heading = headingAtDistance(coordinates, cum, distAlong);
+      if (heading !== null) lastHeading = heading;
+
+      map.getSource("moto").setData({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: pos },
+        properties: { bearing: lastHeading },
+      });
+      map.getSource("trail").setData({
+        type: "Feature",
+        geometry: { type: "LineString", coordinates: trailUpToDistance(coordinates, cum, distAlong) },
+      });
+
+      if (progress < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        animationRunning = false;
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
 }
 
 /* ---------- 4) Podpięcie UI ---------- */
@@ -266,12 +484,35 @@ document.getElementById("routeBtn").addEventListener("click", async () => {
     document.getElementById("statDist").textContent = `${(distanceMeters / 1000).toFixed(0)} km`;
     document.getElementById("statDur").textContent = `${(durationSeconds / 3600).toFixed(1)} h`;
     document.getElementById("routeCard").style.display = "block";
+    lastRouteCoordinates = coordinates;
     showRouteOnMap(coordinates, lastWaypoints);
+    document.getElementById("animateBtn").disabled = false;
   } catch (e) {
     showError(e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = "2. Pokaż trasę na mapie";
+  }
+});
+
+document.querySelectorAll(".duration-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".duration-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    selectedDuration = parseInt(btn.dataset.duration, 10);
+  });
+});
+
+document.getElementById("animateBtn").addEventListener("click", async () => {
+  if (!lastRouteCoordinates) return;
+  const btn = document.getElementById("animateBtn");
+  btn.disabled = true;
+  btn.textContent = `Animacja (${selectedDuration}s)…`;
+  try {
+    await animateRoute(lastRouteCoordinates, selectedDuration);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "3. Animuj przejazd";
   }
 });
 </script>
