@@ -267,6 +267,21 @@ function trailUpToDistance(coords, cum, dist) {
   return trail;
 }
 
+// przepróbkowanie trasy do stałej liczby RÓWNOMIERNIE rozłożonych (wg dystansu) punktów.
+// Kluczowe dla wydajności animacji: OSRM potrafi zwrócić kilka tysięcy punktów na długiej
+// trasie, a przeliczanie/rysowanie śladu z takiej liczby punktów co klatkę powoduje
+// zacinanie się animacji na telefonie. 300 punktów wystarcza na płynną krzywiznę
+// w 5-10s filmie, a każda klatka animacji robi się dużo tańsza.
+function resampleByDistance(coords, cum, numPoints) {
+  const total = cum[cum.length - 1];
+  const result = [];
+  for (let i = 0; i < numPoints; i++) {
+    const d = (i / (numPoints - 1)) * total;
+    result.push(positionAtDistance(coords, cum, d));
+  }
+  return result;
+}
+
 /* ---------- 4) Ikona motocykla (SVG -> rastrowany obraz dla MapLibre) ---------- */
 const MOTO_SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -348,7 +363,7 @@ function showRouteOnMap(coordinates, waypoints) {
         source: "moto",
         layout: {
           "icon-image": "moto-icon",
-          "icon-size": 0.75,
+          "icon-size": 0.4,
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
@@ -401,7 +416,10 @@ async function animateRoute(coordinates, durationSeconds) {
 
   await loadMotoIcon(map);
 
-  const cum = buildCumulativeDistances(coordinates);
+  // animuj po przepróbkowanej, "lekkiej" wersji trasy — patrz komentarz przy resampleByDistance
+  const fullCum = buildCumulativeDistances(coordinates);
+  const animCoords = resampleByDistance(coordinates, fullCum, 300);
+  const cum = buildCumulativeDistances(animCoords);
   const total = cum[cum.length - 1];
 
   // trasa niewidoczna na starcie, motocykl w punkcie startowym
@@ -410,7 +428,7 @@ async function animateRoute(coordinates, durationSeconds) {
   setLayerVisible("moto-marker", true);
   map.getSource("trail").setData({ type: "Feature", geometry: { type: "LineString", coordinates: [] } });
 
-  let lastHeading = headingAtDistance(coordinates, cum, 0) ?? 0;
+  let lastHeading = headingAtDistance(animCoords, cum, 0) ?? 0;
   const startTime = performance.now();
 
   return new Promise((resolve) => {
@@ -421,8 +439,8 @@ async function animateRoute(coordinates, durationSeconds) {
       const progress = Math.min(elapsed / durationSeconds, 1);
       const distAlong = progress * total;
 
-      const pos = positionAtDistance(coordinates, cum, distAlong);
-      const heading = headingAtDistance(coordinates, cum, distAlong);
+      const pos = positionAtDistance(animCoords, cum, distAlong);
+      const heading = headingAtDistance(animCoords, cum, distAlong);
       if (heading !== null) lastHeading = heading;
 
       map.getSource("moto").setData({
@@ -432,7 +450,7 @@ async function animateRoute(coordinates, durationSeconds) {
       });
       map.getSource("trail").setData({
         type: "Feature",
-        geometry: { type: "LineString", coordinates: trailUpToDistance(coordinates, cum, distAlong) },
+        geometry: { type: "LineString", coordinates: trailUpToDistance(animCoords, cum, distAlong) },
       });
 
       if (progress < 1) {
