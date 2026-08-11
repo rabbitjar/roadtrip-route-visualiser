@@ -785,19 +785,39 @@ function revealRadius(elapsedMs, badgeR, maxR) {
   return maxR - (maxR - badgeR) * (t * t);
 }
 
+
 function drawPhotoRevealFrame(waypoint, elapsedMs) {
   stageCtx.drawImage(frozenCanvas, 0, 0);
-  const [px, py] = projectToStage(waypoint.lng, waypoint.lat);
+  const [px0, py0] = projectToStage(waypoint.lng, waypoint.lat);
+  const cx = STAGE_W / 2, cy = STAGE_H / 2;
   const maxR = Math.hypot(STAGE_W, STAGE_H) / 2 * 1.05;
   const badgeR = STAGE_W * 0.02;
-  const r = revealRadius(elapsedMs, badgeR, maxR);
+
+  // KLUCZOWE: środek koła musi płynnie dojechać do środka ekranu, inaczej przy
+  // punkcie blisko brzegu kadru koło nigdy nie pokryje całego ekranu poprawnie
+  // (zostawało "przyklejone" do pozycji znacznika) — stąd wrażenie braku animacji.
+  let r, ox, oy;
+  if (elapsedMs < REVEAL_GROW_MS) {
+    const eased = 1 - Math.pow(1 - elapsedMs / REVEAL_GROW_MS, 3); // ease-out
+    r = badgeR + (maxR - badgeR) * eased;
+    ox = px0 + (cx - px0) * eased;
+    oy = py0 + (cy - py0) * eased;
+  } else if (elapsedMs < REVEAL_GROW_MS + REVEAL_HOLD_MS) {
+    r = maxR; ox = cx; oy = cy;
+  } else {
+    const t = Math.min((elapsedMs - REVEAL_GROW_MS - REVEAL_HOLD_MS) / REVEAL_SHRINK_MS, 1);
+    const eased = t * t;
+    r = maxR - (maxR - badgeR) * eased;
+    ox = cx + (px0 - cx) * eased; // wraca do pozycji znacznika, jakby zdjęcie "odlatywało" z powrotem na mapę
+    oy = cy + (py0 - cy) * eased;
+  }
 
   stageCtx.save();
   stageCtx.beginPath();
-  stageCtx.arc(px, py, r, 0, Math.PI * 2);
+  stageCtx.arc(ox, oy, r, 0, Math.PI * 2);
   stageCtx.clip();
   if (waypoint.photoImage) {
-    drawImageCover(stageCtx, waypoint.photoImage, px, py, r * 2, r * 2);
+    drawImageCover(stageCtx, waypoint.photoImage, ox, oy, r * 2, r * 2);
   } else {
     stageCtx.fillStyle = "#1b1f23";
     stageCtx.fill();
