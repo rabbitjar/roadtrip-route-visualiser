@@ -89,6 +89,7 @@
     border-color: var(--ink);
   }
   #animateBtn { background: var(--route); }
+  #exportBtn { background: #1b1f23; }
   .icon-picker {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -132,10 +133,16 @@
 
 <div class="card">
   <h2>Nerwowość ruchu</h2>
-  <input type="range" id="wobbleSlider" min="0" max="10" value="3" style="width:100%">
+  <input type="range" id="wobbleSlider" min="0" max="10" value="1" style="width:100%">
+</div>
+
+<div class="card">
+  <h2>Rozmiar ikony</h2>
+  <input type="range" id="sizeSlider" min="2" max="8" value="4" style="width:100%">
 </div>
 
 <button id="animateBtn" disabled>3. Animuj przejazd</button>
+<button id="exportBtn" disabled>4. Pobierz wideo</button>
 
 <div id="waypointsCard" class="card" style="display:none">
   <h2>Punkty trasy</h2>
@@ -435,14 +442,18 @@ const ICON_LIBRARY = {
 };
 
 let selectedIconKey = "motorbike";
+let iconScale = 0.4; // sterowane suwakiem w UI
 
-function buildIconSvg(paths, color, flip) {
+function buildIconSvg(paths, flip) {
   const inner = paths.map((d) => `<path d="${d}"/>`).join("");
   const transform = flip ? ' transform="translate(24,0) scale(-1,1)"' : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <g${transform}>
-      <g stroke="#ffffff" stroke-width="3.4">${inner}</g>
-      <g stroke="${color}" stroke-width="2">${inner}</g>
+  // odznaka: białe kółko z cienką obwódką + ciemna ikonka wyśrodkowana w środku
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="16" cy="16" r="14.5" fill="#ffffff" stroke="#d7d7d7" stroke-width="1.2"/>
+    <g transform="translate(7,7) scale(0.75)">
+      <g${transform}>
+        <g stroke="#1b1f23" stroke-width="2.3">${inner}</g>
+      </g>
     </g>
   </svg>`;
 }
@@ -464,11 +475,11 @@ function svgToImage(svgString) {
 async function loadAllActivityIcons(mapInstance) {
   for (const [key, def] of Object.entries(ICON_LIBRARY)) {
     if (!mapInstance.hasImage(key)) {
-      const img = await svgToImage(buildIconSvg(def.paths, "#ff4d1f", false));
+      const img = await svgToImage(buildIconSvg(def.paths, false));
       mapInstance.addImage(key, img);
     }
     if (!mapInstance.hasImage(key + "-flip")) {
-      const imgFlip = await svgToImage(buildIconSvg(def.paths, "#ff4d1f", true));
+      const imgFlip = await svgToImage(buildIconSvg(def.paths, true));
       mapInstance.addImage(key + "-flip", imgFlip);
     }
   }
@@ -491,7 +502,7 @@ function buildIconPickerUI() {
     const btn = document.createElement("div");
     btn.className = "icon-choice" + (key === selectedIconKey ? " active" : "");
     btn.title = def.label;
-    btn.innerHTML = buildIconSvg(def.paths, key === selectedIconKey ? "#ff4d1f" : "#1b1f23", false);
+    btn.innerHTML = buildIconSvg(def.paths, false);
     btn.addEventListener("click", () => {
       selectedIconKey = key;
       document.querySelectorAll(".icon-choice").forEach((el) => el.classList.remove("active"));
@@ -510,6 +521,7 @@ function updateMotoIconLayer() {
     selectedIconKey + "-flip",
     selectedIconKey,
   ]);
+  map.setLayoutProperty("moto-marker", "icon-size", iconScale);
 }
 
 /* ---------- 5) Mapa (MapLibre + OpenFreeMap, bez klucza) ---------- */
@@ -517,47 +529,60 @@ let map = null;
 let lastRouteCoordinates = null;
 let animationRunning = false;
 let selectedDuration = 7;
-let waypointMarkers = []; // { marker, distanceAlong, visible }
 
-// "nerwowość" ruchu: częstotliwość obniżona (było 12 rad/s - zbyt "nerwowo"),
-// amplituda sterowana suwakiem w UI (0-10 -> 0-8°)
-const WOBBLE_FREQUENCY = 6;
-let wobbleAmplitude = 2.4; // domyślna wartość odpowiadająca pozycji suwaka = 3
+// "nerwowość" ruchu: częstotliwość i domyślna amplituda mocno obniżone
+// (poprzednie wartości okazały się zbyt "nerwowe" w testach), suwak w UI dostraja na żywo
+const WOBBLE_FREQUENCY = 5;
+let wobbleAmplitude = 0.8; // domyślna wartość odpowiadająca pozycji suwaka = 1
+
+let waypointFeatures = []; // { lng, lat, name, distanceAlong, revealed }
 
 function rebuildWaypointMarkers(coordinates, cum, waypoints) {
-  waypointMarkers.forEach((wm) => wm.marker.remove());
-  waypointMarkers = waypoints.map((w) => ({
-    marker: new maplibregl.Marker({ color: "#1b1f23" })
-      .setLngLat([w.lng, w.lat])
-      .setPopup(new maplibregl.Popup({ offset: 12 }).setText(w.name)),
+  waypointFeatures = waypoints.map((w) => ({
+    lng: w.lng,
+    lat: w.lat,
+    name: w.name,
     distanceAlong: distanceAlongForWaypoint(coordinates, cum, [w.lng, w.lat]),
-    visible: false,
+    revealed: false,
   }));
+  syncWaypointSource();
+}
+
+// KLUCZOWE dla eksportu wideo: przystanki żyją jako natywne źródło/warstwa mapy
+// (nie jako DOM-owe maplibregl.Marker), więc trafiają do tego samego canvasu,
+// który nagrywa MediaRecorder. DOM-owe markery byłyby niewidoczne w wyeksportowanym pliku.
+function syncWaypointSource() {
+  if (!map || !map.getSource("waypoint-points")) return;
+  const revealed = waypointFeatures.filter((w) => w.revealed);
+  map.getSource("waypoint-points").setData({
+    type: "FeatureCollection",
+    features: revealed.map((w) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [w.lng, w.lat] },
+      properties: { name: w.name },
+    })),
+  });
 }
 
 function showAllWaypointMarkers() {
-  waypointMarkers.forEach((wm) => {
-    if (!wm.visible) {
-      wm.marker.addTo(map);
-      wm.visible = true;
-    }
-  });
+  waypointFeatures.forEach((w) => (w.revealed = true));
+  syncWaypointSource();
 }
 
 function hideAllWaypointMarkers() {
-  waypointMarkers.forEach((wm) => {
-    wm.marker.remove();
-    wm.visible = false;
-  });
+  waypointFeatures.forEach((w) => (w.revealed = false));
+  syncWaypointSource();
 }
 
 function revealWaypointMarkersUpTo(distanceAlong) {
-  waypointMarkers.forEach((wm) => {
-    if (!wm.visible && distanceAlong >= wm.distanceAlong) {
-      wm.marker.addTo(map);
-      wm.visible = true;
+  let changed = false;
+  waypointFeatures.forEach((w) => {
+    if (!w.revealed && distanceAlong >= w.distanceAlong) {
+      w.revealed = true;
+      changed = true;
     }
   });
+  if (changed) syncWaypointSource();
 }
 
 function showRouteOnMap(coordinates, waypoints) {
@@ -576,6 +601,7 @@ function showRouteOnMap(coordinates, waypoints) {
       style: "https://tiles.openfreemap.org/styles/positron",
       center: coordinates[0],
       zoom: 5,
+      preserveDrawingBuffer: true, // wymagane, żeby canvas.captureStream() przy eksporcie wideo działał niezawodnie
     });
 
     map.on("load", async () => {
@@ -612,7 +638,7 @@ function showRouteOnMap(coordinates, waypoints) {
         source: "moto",
         layout: {
           "icon-image": ["case", ["get", "flip"], selectedIconKey + "-flip", selectedIconKey],
-          "icon-size": 0.55,
+          "icon-size": iconScale,
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
@@ -621,6 +647,22 @@ function showRouteOnMap(coordinates, waypoints) {
       });
       setLayerVisible("moto-marker", false);
       setLayerVisible("trail-line", false);
+
+      map.addSource("waypoint-points", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "waypoint-circles",
+        type: "circle",
+        source: "waypoint-points",
+        paint: {
+          "circle-radius": 6,
+          "circle-color": "#ffffff",
+          "circle-stroke-width": 2.5,
+          "circle-stroke-color": "#1b1f23",
+        },
+      });
 
       rebuildWaypointMarkers(coordinates, cum, waypoints);
       showAllWaypointMarkers();
@@ -650,7 +692,7 @@ function setLayerVisible(layerId, visible) {
   }
 }
 
-async function animateRoute(coordinates, durationSeconds) {
+async function animateRoute(coordinates, durationSeconds, onProgress) {
   if (animationRunning) return;
   animationRunning = true;
 
@@ -701,6 +743,7 @@ async function animateRoute(coordinates, durationSeconds) {
         geometry: { type: "LineString", coordinates: trailUpToDistance(animCoords, cum, distAlong) },
       });
       revealWaypointMarkersUpTo(distAlong);
+      if (onProgress) onProgress(progress);
 
       if (progress < 1) {
         requestAnimationFrame(frame);
@@ -712,6 +755,67 @@ async function animateRoute(coordinates, durationSeconds) {
     }
     requestAnimationFrame(frame);
   });
+}
+
+/* ---------- 6) Eksport wideo (Canvas.captureStream + MediaRecorder, bez backendu) ---------- */
+function pickSupportedMimeType() {
+  // kolejność zgodna z tym, co realnie wspierają przeglądarki mobilne:
+  // Safari/iOS nagrywa natywnie MP4, Chrome/Android — WebM
+  const candidates = [
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  for (const type of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return null;
+}
+
+async function exportVideo(durationSeconds, onProgress) {
+  if (!map) throw new Error("Najpierw pokaż trasę na mapie.");
+  if (!window.MediaRecorder) {
+    throw new Error("Ta przeglądarka nie obsługuje nagrywania wideo (MediaRecorder API).");
+  }
+
+  const mimeType = pickSupportedMimeType();
+  if (!mimeType) {
+    throw new Error("Nie znalazłem obsługiwanego formatu wideo na tym urządzeniu.");
+  }
+
+  const canvas = map.getCanvas();
+  const stream = canvas.captureStream(30); // stały 30fps, niezależny od tego kiedy dokładnie mapa się przerysowuje
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+  const chunks = [];
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+
+  const stopped = new Promise((resolve) => {
+    recorder.onstop = resolve;
+  });
+
+  recorder.start();
+  try {
+    await animateRoute(lastRouteCoordinates, durationSeconds, onProgress);
+  } finally {
+    recorder.stop();
+  }
+  await stopped;
+
+  const blob = new Blob(chunks, { type: mimeType });
+  const ext = mimeType.includes("mp4") ? "mp4" : "webm";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `trasa.${ext}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+  return { mimeType, ext, sizeBytes: blob.size };
 }
 
 /* ---------- 4) Podpięcie UI ---------- */
@@ -755,6 +859,7 @@ document.getElementById("routeBtn").addEventListener("click", async () => {
     lastRouteCoordinates = coordinates;
     showRouteOnMap(coordinates, lastWaypoints);
     document.getElementById("animateBtn").disabled = false;
+    document.getElementById("exportBtn").disabled = false;
   } catch (e) {
     showError(e.message);
   } finally {
@@ -786,6 +891,36 @@ document.getElementById("animateBtn").addEventListener("click", async () => {
 
 document.getElementById("wobbleSlider").addEventListener("input", (e) => {
   wobbleAmplitude = parseInt(e.target.value, 10) * 0.8; // 0-10 -> 0-8°
+});
+
+document.getElementById("sizeSlider").addEventListener("input", (e) => {
+  iconScale = parseInt(e.target.value, 10) / 10; // 2-8 -> 0.2-0.8
+  updateMotoIconLayer();
+});
+
+document.getElementById("exportBtn").addEventListener("click", async () => {
+  if (!lastRouteCoordinates) return;
+  hideError();
+  const animBtn = document.getElementById("animateBtn");
+  const btn = document.getElementById("exportBtn");
+  btn.disabled = true;
+  animBtn.disabled = true;
+  btn.textContent = "Nagrywam… 0%";
+  try {
+    const result = await exportVideo(selectedDuration, (progress) => {
+      btn.textContent = `Nagrywam… ${Math.round(progress * 100)}%`;
+    });
+    btn.textContent = `Pobrano (.${result.ext})`;
+    setTimeout(() => {
+      btn.textContent = "4. Pobierz wideo";
+    }, 2500);
+  } catch (e) {
+    showError(e.message);
+    btn.textContent = "4. Pobierz wideo";
+  } finally {
+    btn.disabled = false;
+    animBtn.disabled = false;
+  }
 });
 
 buildIconPickerUI();
