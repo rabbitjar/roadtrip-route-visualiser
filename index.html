@@ -1278,6 +1278,10 @@ function buildPhotosUI(waypoints) {
         waypointPhotos[i] = { img, url };
         thumb.src = url;
         thumb.style.display = "block";
+        // KLUCZOWE: waypointFeatures budują się od razu po pobraniu trasy (krok 1),
+        // czyli zanim zdążysz dołączyć zdjęcia na ekranie 2 — bez tej synchronizacji
+        // dołączone zdjęcie nigdy nie trafiłoby do animacji.
+        if (waypointFeatures[i]) waypointFeatures[i].photoImage = img;
       } catch {
         showError(`Nie udało się wczytać zdjęcia dla punktu "${w.name}".`);
       }
