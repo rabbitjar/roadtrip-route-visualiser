@@ -96,25 +96,19 @@
     border: 1px solid var(--line); flex-shrink: 0; display: none;
   }
   .photo-row input[type="file"] { max-width: 90px; font-size: 0.75rem; }
-  .duration-row {
-    display: flex;
-    gap: 8px;
-    margin-top: 10px;
+  .color-picker {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 5px;
   }
-  .duration-btn {
-    flex: 1;
-    margin-top: 0;
-    padding: 10px;
-    font-size: 0.9rem;
-    background: #fff;
-    color: var(--ink);
-    border: 1px solid var(--line);
+  .color-swatch {
+    aspect-ratio: 1;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    padding: 0;
   }
-  .duration-btn.active {
-    background: var(--ink);
-    color: #fff;
-    border-color: var(--ink);
-  }
+  .color-swatch.active { border-color: var(--ink); }
   #animateBtn { background: var(--route); }
   #exportBtn { background: #1b1f23; }
   .icon-picker {
@@ -147,10 +141,9 @@
 <button id="parseBtn">1. Wyciągnij punkty z linku</button>
 <button id="routeBtn" disabled>2. Pokaż trasę na mapie</button>
 
-<div class="duration-row">
-  <button class="duration-btn" data-duration="5">5 s</button>
-  <button class="duration-btn active" data-duration="7">7 s</button>
-  <button class="duration-btn" data-duration="10">10 s</button>
+<div class="card">
+  <h2>Prędkość posuwania znacznika</h2>
+  <input type="text" inputmode="decimal" id="speedInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
 </div>
 
 <div class="card">
@@ -159,13 +152,23 @@
 </div>
 
 <div class="card">
+  <h2>Kolor trasy</h2>
+  <div id="colorPicker" class="color-picker"></div>
+</div>
+
+<div class="card">
   <h2>Nerwowość ruchu</h2>
-  <input type="range" id="wobbleSlider" min="0" max="10" value="1" style="width:100%">
+  <select id="wobbleSelect" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;"></select>
 </div>
 
 <div class="card">
   <h2>Rozmiar ikony</h2>
   <input type="range" id="sizeSlider" min="2" max="8" value="4" style="width:100%">
+</div>
+
+<div class="card">
+  <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s)</h2>
+  <input type="text" inputmode="decimal" id="holdInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
 </div>
 
 <button id="animateBtn" disabled>3. Animuj przejazd</button>
@@ -563,12 +566,14 @@ function updateMotoIconLayer() {
 let map = null;
 let lastRouteCoordinates = null;
 let animationRunning = false;
+let speedMultiplier = 1; // "1" = obecne domyślne tempo (7s na testowej trasie)
 let selectedDuration = 7;
+let routeColor = "#ff4d1f";
 
-// "nerwowość" ruchu: częstotliwość i domyślna amplituda mocno obniżone
-// (poprzednie wartości okazały się zbyt "nerwowe" w testach), suwak w UI dostraja na żywo
+// "nerwowość" ruchu: częstotliwość stała, amplituda wybierana z selektora 1-10
+// (docelowo ten parametr zniknie całkiem, jak tylko znajdziemy optymalną wartość)
 const WOBBLE_FREQUENCY = 5;
-let wobbleAmplitude = 0.8; // domyślna wartość odpowiadająca pozycji suwaka = 1
+let wobbleAmplitude = 0.8; // domyślna wartość odpowiadająca pozycji 1
 
 let waypointFeatures = []; // { lng, lat, name, distanceAlong, revealed, photoImage }
 
@@ -577,11 +582,14 @@ function rebuildWaypointMarkers(coordinates, cum, waypoints) {
     lng: w.lng,
     lat: w.lat,
     name: w.name,
+    photoKey: `wp-photo-${i}`,
     distanceAlong: distanceAlongForWaypoint(coordinates, cum, [w.lng, w.lat]),
     revealed: false,
+    settled: false,
     photoImage: waypointPhotos[i]?.img ?? null,
   }));
   syncWaypointSource();
+  syncPhotoBadgeSource();
 }
 
 // KLUCZOWE dla eksportu wideo: przystanki żyją jako natywne źródło/warstwa mapy
@@ -589,7 +597,9 @@ function rebuildWaypointMarkers(coordinates, cum, waypoints) {
 // który nagrywa MediaRecorder. DOM-owe markery byłyby niewidoczne w wyeksportowanym pliku.
 function syncWaypointSource() {
   if (!map || !map.getSource("waypoint-points")) return;
-  const revealed = waypointFeatures.filter((w) => w.revealed);
+  // punkty z już "osadzoną" miniaturką zdjęcia pokazują się przez waypoint-photo-badges,
+  // więc tutaj wystarczy zwykła kropka dla reszty odsłoniętych
+  const revealed = waypointFeatures.filter((w) => w.revealed && !w.settled);
   map.getSource("waypoint-points").setData({
     type: "FeatureCollection",
     features: revealed.map((w) => ({
@@ -598,6 +608,36 @@ function syncWaypointSource() {
       properties: { name: w.name },
     })),
   });
+}
+
+function syncPhotoBadgeSource() {
+  if (!map || !map.getSource("waypoint-photos")) return;
+  const settled = waypointFeatures.filter((w) => w.settled);
+  map.getSource("waypoint-photos").setData({
+    type: "FeatureCollection",
+    features: settled.map((w) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [w.lng, w.lat] },
+      properties: { photoKey: w.photoKey },
+    })),
+  });
+}
+
+// wywoływane, gdy sekwencja pełnoekranowego pokazania zdjęcia się zakończy —
+// od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę
+function settlePhotoBadge(waypoint) {
+  if (!waypoint.photoImage || waypoint.settled) return;
+  if (!map.hasImage(waypoint.photoKey)) {
+    map.addImage(waypoint.photoKey, buildCircularThumbnail(waypoint.photoImage, 64));
+  }
+  waypoint.settled = true;
+  syncWaypointSource();
+  syncPhotoBadgeSource();
+}
+
+function hideAllPhotoBadges() {
+  waypointFeatures.forEach((w) => (w.settled = false));
+  syncPhotoBadgeSource();
 }
 
 function showAllWaypointMarkers() {
@@ -637,6 +677,14 @@ function showRouteOnMap(coordinates, waypoints) {
       center: coordinates[0],
       zoom: 5,
       preserveDrawingBuffer: true, // wymagane, żeby canvas.captureStream() przy eksporcie wideo działał niezawodnie
+      // ramka zablokowana: bez tego przewijanie strony palcem po mapie przesuwało ją przypadkiem
+      dragPan: false,
+      dragRotate: false,
+      scrollZoom: false,
+      touchZoomRotate: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
     });
 
     map.on("load", async () => {
@@ -646,7 +694,7 @@ function showRouteOnMap(coordinates, waypoints) {
         type: "line",
         source: "route",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#ff4d1f", "line-width": 4 },
+        paint: { "line-color": routeColor, "line-width": 4 },
       });
 
       // źródła pod animację: ślad (rysowany dotąd) + punkt motocykla
@@ -659,7 +707,7 @@ function showRouteOnMap(coordinates, waypoints) {
         type: "line",
         source: "trail",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#ff4d1f", "line-width": 4 },
+        paint: { "line-color": routeColor, "line-width": 4 },
       });
 
       map.addSource("moto", {
@@ -692,10 +740,28 @@ function showRouteOnMap(coordinates, waypoints) {
         type: "circle",
         source: "waypoint-points",
         paint: {
-          "circle-radius": 6,
+          "circle-radius": 12,
           "circle-color": "#ffffff",
-          "circle-stroke-width": 2.5,
+          "circle-stroke-width": 3,
           "circle-stroke-color": "#1b1f23",
+        },
+      });
+
+      // miniaturki zdjęć: pokazują się w znaczniku DOPIERO gdy sekwencja
+      // pełnoekranowego pokazania danego zdjęcia się zakończy (patrz settlePhotoBadge)
+      map.addSource("waypoint-photos", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "waypoint-photo-badges",
+        type: "symbol",
+        source: "waypoint-photos",
+        layout: {
+          "icon-image": ["get", "photoKey"],
+          "icon-size": 24 / 64, // dopasowane do promienia 12 (średnica 24) przy rastrze 64x64
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
         },
       });
 
@@ -753,6 +819,55 @@ function projectToStage(lng, lat) {
   return [(p.x / rect.width) * STAGE_W, (p.y / rect.height) * STAGE_H];
 }
 
+// okrągła miniaturka zdjęcia do znacznika (po zakończeniu pełnoekranowego pokazania)
+function buildCircularThumbnail(img, sizePx) {
+  const c = document.createElement("canvas");
+  c.width = sizePx;
+  c.height = sizePx;
+  const ctx = c.getContext("2d");
+  const r = sizePx / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(r, r, r - 3, 0, Math.PI * 2);
+  ctx.clip();
+  drawImageCover(ctx, img, r, r, sizePx, sizePx);
+  ctx.restore();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#1b1f23";
+  ctx.beginPath();
+  ctx.arc(r, r, r - 2, 0, Math.PI * 2);
+  ctx.stroke();
+  return c;
+}
+
+// narastający licznik przejechanych km w prawym dolnym rogu — rysowany
+// bezpośrednio na stageCanvas (musi być na canvasie, żeby trafił do nagrania)
+let currentDistanceKm = 0;
+function drawDistanceCounter(km) {
+  const text = `${km.toFixed(1)} km`;
+  stageCtx.save();
+  stageCtx.font = "600 40px -apple-system, Roboto, sans-serif";
+  stageCtx.textAlign = "right";
+  stageCtx.textBaseline = "alphabetic";
+  const pad = 28;
+  const textW = stageCtx.measureText(text).width;
+  const boxW = textW + 36, boxH = 60;
+  const x = STAGE_W - pad, y = STAGE_H - pad;
+
+  stageCtx.fillStyle = "rgba(27,31,35,0.7)";
+  if (stageCtx.roundRect) {
+    stageCtx.beginPath();
+    stageCtx.roundRect(x - boxW, y - boxH, boxW, boxH, 12);
+    stageCtx.fill();
+  } else {
+    stageCtx.fillRect(x - boxW, y - boxH, boxW, boxH);
+  }
+
+  stageCtx.fillStyle = "#ffffff";
+  stageCtx.fillText(text, x - 16, y - 16);
+  stageCtx.restore();
+}
+
 function drawImageCover(ctx, img, cx, cy, boxW, boxH) {
   const imgRatio = img.width / img.height;
   const boxRatio = boxW / boxH;
@@ -772,8 +887,11 @@ function drawImageCover(ctx, img, cx, cy, boxW, boxH) {
 }
 
 // choreografia zdjęcia: 1s powiększanie, 2s trzymanie, 0.4s znikanie (szybciej niż wejście)
-const REVEAL_GROW_MS = 1000, REVEAL_HOLD_MS = 2000, REVEAL_SHRINK_MS = 400;
-const REVEAL_TOTAL_MS = REVEAL_GROW_MS + REVEAL_HOLD_MS + REVEAL_SHRINK_MS;
+const REVEAL_GROW_MS = 1000, REVEAL_SHRINK_MS = 400;
+let REVEAL_HOLD_MS = 1000; // sterowane polem tekstowym w UI, domyślnie 1s
+function revealTotalMs() {
+  return REVEAL_GROW_MS + REVEAL_HOLD_MS + REVEAL_SHRINK_MS;
+}
 
 function revealRadius(elapsedMs, badgeR, maxR) {
   if (elapsedMs < REVEAL_GROW_MS) {
@@ -850,6 +968,8 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   setLayerVisible("moto-marker", true);
   map.getSource("trail").setData({ type: "Feature", geometry: { type: "LineString", coordinates: [] } });
   hideAllWaypointMarkers();
+  hideAllPhotoBadges();
+  currentDistanceKm = 0;
 
   let lastHeading = headingAtDistance(animCoords, cum, 0) ?? 0;
   const startTime = performance.now();
@@ -870,6 +990,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       if (mode === "traveling") {
         try {
           compositeMapToStage();
+          drawDistanceCounter(currentDistanceKm);
         } catch (e) {
           console.error("compositeMapToStage (render event):", e);
         }
@@ -900,9 +1021,10 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       if (mode === "reveal") {
         const revealElapsed = now - revealStartTime;
         drawPhotoRevealFrame(revealWaypoint, revealElapsed);
-        if (revealElapsed >= REVEAL_TOTAL_MS) {
+        if (revealElapsed >= revealTotalMs()) {
           mode = "traveling";
-          pausedAccumMs += REVEAL_TOTAL_MS;
+          pausedAccumMs += revealTotalMs();
+          settlePhotoBadge(revealWaypoint); // odtąd znacznik pokazuje miniaturkę tego zdjęcia
         }
         requestAnimationFrame(frame);
         return;
@@ -931,6 +1053,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         type: "Feature",
         geometry: { type: "LineString", coordinates: trailUpToDistance(animCoords, cum, distAlong) },
       });
+      currentDistanceKm = distAlong / 1000;
 
       // sprawdź, czy właśnie minęliśmy punkt ze zdjęciem — jeśli tak, wstrzymaj jazdę i pokaż je
       const justReached = waypointFeatures.find(
@@ -941,6 +1064,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
 
       if (justReached) {
         compositeMapToStage(); // upewnij się, że ostatnia klatka przed zamrożeniem jest aktualna
+        drawDistanceCounter(currentDistanceKm);
         frozenCtx.drawImage(stageCanvas, 0, 0);
         mode = "reveal";
         revealStartTime = now;
@@ -954,6 +1078,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
         compositeMapToStage();
+        drawDistanceCounter(currentDistanceKm);
         map.off("render", onMapRender);
         document.getElementById("stageCanvas").style.display = "none";
         animationRunning = false;
@@ -1125,12 +1250,20 @@ document.getElementById("routeBtn").addEventListener("click", async () => {
   }
 });
 
-document.querySelectorAll(".duration-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".duration-btn").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    selectedDuration = parseInt(btn.dataset.duration, 10);
-  });
+const BASE_DURATION_SECONDS = 7; // odpowiada prędkości = 1, tak jak dotychczasowe domyślne tempo
+
+function parseDecimalInput(str, fallback) {
+  const n = parseFloat(String(str).replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+document.getElementById("speedInput").addEventListener("input", (e) => {
+  speedMultiplier = parseDecimalInput(e.target.value, 1);
+  selectedDuration = BASE_DURATION_SECONDS / speedMultiplier;
+});
+
+document.getElementById("holdInput").addEventListener("input", (e) => {
+  REVEAL_HOLD_MS = parseDecimalInput(e.target.value, 1) * 1000;
 });
 
 document.getElementById("animateBtn").addEventListener("click", async () => {
@@ -1138,7 +1271,7 @@ document.getElementById("animateBtn").addEventListener("click", async () => {
   hideError();
   const btn = document.getElementById("animateBtn");
   btn.disabled = true;
-  btn.textContent = `Animacja (${selectedDuration}s)…`;
+  btn.textContent = `Animacja (prędkość ${speedMultiplier})…`;
   try {
     await animateRoute(lastRouteCoordinates, selectedDuration);
   } catch (e) {
@@ -1149,8 +1282,8 @@ document.getElementById("animateBtn").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("wobbleSlider").addEventListener("input", (e) => {
-  wobbleAmplitude = parseInt(e.target.value, 10) * 0.8; // 0-10 -> 0-8°
+document.getElementById("wobbleSelect").addEventListener("change", (e) => {
+  wobbleAmplitude = parseInt(e.target.value, 10) * 0.8; // 1-10 -> 0.8-8°
 });
 
 document.getElementById("sizeSlider").addEventListener("input", (e) => {
@@ -1183,7 +1316,51 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
   }
 });
 
+function buildWobbleSelectUI() {
+  const select = document.getElementById("wobbleSelect");
+  select.innerHTML = "";
+  for (let i = 1; i <= 10; i++) {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = i;
+    if (i === 1) opt.selected = true;
+    select.appendChild(opt);
+  }
+}
+
+// 64 kolory: 8 odcieni x 8 poziomów jasności
+const COLOR_PALETTE = (() => {
+  const hues = [0, 25, 45, 90, 160, 200, 260, 320];
+  const lightnesses = [25, 35, 45, 55, 65, 75, 85, 92];
+  const colors = [];
+  for (const l of lightnesses) {
+    for (const h of hues) colors.push(`hsl(${h}, 75%, ${l}%)`);
+  }
+  return colors;
+})();
+routeColor = COLOR_PALETTE[3 * 8 + 1]; // pomarańczowawy, zbliżony do dotychczasowego domyślnego
+
+function buildColorPickerUI() {
+  const container = document.getElementById("colorPicker");
+  container.innerHTML = "";
+  COLOR_PALETTE.forEach((color) => {
+    const btn = document.createElement("button");
+    btn.className = "color-swatch" + (color === routeColor ? " active" : "");
+    btn.style.background = color;
+    btn.addEventListener("click", () => {
+      routeColor = color;
+      document.querySelectorAll(".color-swatch").forEach((el) => el.classList.remove("active"));
+      btn.classList.add("active");
+      if (map?.getLayer("route-line")) map.setPaintProperty("route-line", "line-color", color);
+      if (map?.getLayer("trail-line")) map.setPaintProperty("trail-line", "line-color", color);
+    });
+    container.appendChild(btn);
+  });
+}
+
 buildIconPickerUI();
+buildWobbleSelectUI();
+buildColorPickerUI();
 </script>
 </body>
 
