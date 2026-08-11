@@ -89,6 +89,24 @@
     border-color: var(--ink);
   }
   #animateBtn { background: var(--route); }
+  .icon-picker {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+  }
+  .icon-choice {
+    aspect-ratio: 1;
+    border: 2px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px;
+    cursor: pointer;
+  }
+  .icon-choice.active { border-color: var(--route); background: #fff2ec; }
+  .icon-choice svg { width: 100%; height: 100%; }
 </style>
 </head>
 <body>
@@ -106,6 +124,17 @@
   <button class="duration-btn active" data-duration="7">7 s</button>
   <button class="duration-btn" data-duration="10">10 s</button>
 </div>
+
+<div class="card">
+  <h2>Ikona</h2>
+  <div id="iconPicker" class="icon-picker"></div>
+</div>
+
+<div class="card">
+  <h2>Nerwowość ruchu</h2>
+  <input type="range" id="wobbleSlider" min="0" max="10" value="3" style="width:100%">
+</div>
+
 <button id="animateBtn" disabled>3. Animuj przejazd</button>
 
 <div id="waypointsCard" class="card" style="display:none">
@@ -298,32 +327,189 @@ function distanceAlongForWaypoint(coords, cum, waypointLngLat) {
   return bestCum;
 }
 
-/* ---------- 4) Ikona motocykla (SVG -> rastrowany obraz dla MapLibre) ---------- */
-const MOTO_SVG = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <path d="M26,20 L38,20 L35,41 L29,41 Z" fill="#ff4d1f" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
-  <rect x="25" y="34" width="14" height="9" rx="3.5" fill="#1b1f23" stroke="#ffffff" stroke-width="1.5"/>
-  <circle cx="32" cy="49" r="9.5" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
-  <circle cx="32" cy="49" r="3.2" fill="#ffffff"/>
-  <circle cx="32" cy="15" r="7" fill="#1b1f23" stroke="#ffffff" stroke-width="2.5"/>
-  <circle cx="32" cy="15" r="2.4" fill="#ffffff"/>
-  <line x1="18" y1="11" x2="46" y2="11" stroke="#1b1f23" stroke-width="4.5" stroke-linecap="round"/>
-</svg>`.trim();
+/* ---------- 4) Biblioteka ikon aktywności ---------- */
+// Źródło: Tabler Icons (MIT, https://tabler.io/icons) — same ścieżki co w oryginalnych
+// plikach SVG tej biblioteki. Wyjątek: "kitesurfing" nie istnieje w Tabler ani w
+// Material Symbols (sprawdzone), więc dorysowałem własną ikonę w tym samym stylu
+// (viewBox 24x24, stroke 2, zaokrąglone końce), żeby całość wyglądała spójnie.
+const ICON_LIBRARY = {
+  walk: {
+    label: "Pieszo",
+    paths: [
+      "M12 4a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
+      "M7 21l3 -4",
+      "M16 21l-2 -4l-3 -3l1 -6",
+      "M6 12l2 -3l4 -1l3 3l3 1",
+    ],
+    sideView: false,
+  },
+  bike: {
+    label: "Rower",
+    paths: [
+      "M2 18a3 3 0 1 0 6 0a3 3 0 0 0 -6 0",
+      "M16 18a3 3 0 1 0 6 0a3 3 0 0 0 -6 0",
+      "M12 19v-4l-3 -3l5 -4l2 3h3",
+      "M13.007 5a2 2 0 1 0 4 0a2 2 0 1 0 -4 0",
+    ],
+    sideView: true,
+  },
+  "roller-skating": {
+    label: "Rolki",
+    paths: [
+      "M5.905 5h3.418a1 1 0 0 1 .928 .629l1.143 2.856a3 3 0 0 0 2.207 1.83l4.717 .926a2.084 2.084 0 0 1 1.682 2.045v.714a1 1 0 0 1 -1 1h-13.895a1 1 0 0 1 -1 -1.1l.8 -8a1 1 0 0 1 1 -.9",
+      "M6 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0",
+      "M14 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0",
+    ],
+    sideView: true,
+  },
+  kayak: {
+    label: "Kajak / kanu",
+    paths: [
+      "M6.414 6.414a2 2 0 0 0 0 -2.828l-1.414 -1.414l-2.828 2.828l1.414 1.414a2 2 0 0 0 2.828 0",
+      "M17.586 17.586a2 2 0 0 0 0 2.828l1.414 1.414l2.828 -2.828l-1.414 -1.414a2 2 0 0 0 -2.828 0",
+      "M6.5 6.5l11 11",
+      "M22 2.5c-9.983 2.601 -17.627 7.952 -20 19.5c9.983 -2.601 17.627 -7.952 20 -19.5",
+      "M6.5 12.5l5 5",
+      "M12.5 6.5l5 5",
+    ],
+    sideView: false,
+  },
+  kitesurfing: {
+    label: "Kitesurfing",
+    paths: [
+      "M4 5c4 -3.2 12 -3.2 16 0c-2.5 3.6 -5.7 5.2 -8 5.2c-2.3 0 -5.5 -1.6 -8 -5.2z",
+      "M8.5 6.3l3.5 4",
+      "M15.5 6.3l-3.5 4",
+      "M12 10.3v6.2",
+      "M8.5 19.5h7",
+      "M3.5 21.5c1.3 -1.2 2.6 -1.2 4 0c1.3 1.2 2.6 1.2 4 0c1.3 -1.2 2.6 -1.2 4 0c1.3 1.2 2.6 1.2 4 0",
+    ],
+    sideView: false,
+    custom: true,
+  },
+  motorbike: {
+    label: "Motocykl",
+    paths: [
+      "M2 16a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+      "M16 16a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+      "M7.5 14h5l4 -4h-10.5m1.5 4l4 -4",
+      "M13 6h2l1.5 3l2 4",
+    ],
+    sideView: true,
+  },
+  car: {
+    label: "Samochód",
+    paths: [
+      "M5 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0",
+      "M15 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0",
+      "M5 17h-2v-6l2 -5h9l4 5h1a2 2 0 0 1 2 2v4h-2m-4 0h-6m-6 -6h15m-6 0v-5",
+    ],
+    sideView: true,
+  },
+  "car-off-road": {
+    label: "Terenowy",
+    paths: [
+      "M9 17h6",
+      "M9 17a2 2 0 1 1 -4 0a2 2 0 0 1 4 0",
+      "M19 17a2 2 0 1 1 -4 0a2 2 0 0 1 4 0",
+      "M17 10l-2 -3",
+      "M19 17h2v-5a2 2 0 0 0 -2 -2h-5v2h-2.586a1 1 0 0 1 -.707 -.293l-1.121 -1.121a2 2 0 0 0 -1.414 -.586h-4.172a1 1 0 0 0 -1 1v6h2",
+    ],
+    sideView: true,
+  },
+  plane: {
+    label: "Samolot",
+    paths: [
+      "M16 10h4a2 2 0 0 1 0 4h-4l-4 7h-3l2 -7h-4l-2 2h-3l2 -4l-2 -4h3l2 2h4l-2 -7h3l4 7",
+    ],
+    sideView: true,
+  },
+  horse: {
+    label: "Koń",
+    paths: [
+      "M7 10l-.85 8.507a1.357 1.357 0 0 0 1.35 1.493h.146a2 2 0 0 0 1.857 -1.257l.994 -2.486a2 2 0 0 1 1.857 -1.257h1.292a2 2 0 0 1 1.857 1.257l.994 2.486a2 2 0 0 0 1.857 1.257h.146a1.37 1.37 0 0 0 1.364 -1.494l-.864 -9.506h-8c0 -3 -3 -5 -6 -5l-3 6l2 2l3 -2",
+      "M22 14v-2a3 3 0 0 0 -3 -3",
+    ],
+    sideView: true,
+  },
+};
 
-function loadMotoIcon(mapInstance) {
+let selectedIconKey = "motorbike";
+
+function buildIconSvg(paths, color, flip) {
+  const inner = paths.map((d) => `<path d="${d}"/>`).join("");
+  const transform = flip ? ' transform="translate(24,0) scale(-1,1)"' : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g${transform}>
+      <g stroke="#ffffff" stroke-width="3.4">${inner}</g>
+      <g stroke="${color}" stroke-width="2">${inner}</g>
+    </g>
+  </svg>`;
+}
+
+function svgToImage(svgString) {
   return new Promise((resolve, reject) => {
-    if (mapInstance.hasImage("moto-icon")) return resolve();
-    const img = new Image(128, 128);
-    const blob = new Blob([MOTO_SVG], { type: "image/svg+xml;charset=utf-8" });
+    const img = new Image(96, 96);
+    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     img.onload = () => {
-      mapInstance.addImage("moto-icon", img);
       URL.revokeObjectURL(url);
-      resolve();
+      resolve(img);
     };
     img.onerror = reject;
     img.src = url;
   });
+}
+
+async function loadAllActivityIcons(mapInstance) {
+  for (const [key, def] of Object.entries(ICON_LIBRARY)) {
+    if (!mapInstance.hasImage(key)) {
+      const img = await svgToImage(buildIconSvg(def.paths, "#ff4d1f", false));
+      mapInstance.addImage(key, img);
+    }
+    if (!mapInstance.hasImage(key + "-flip")) {
+      const imgFlip = await svgToImage(buildIconSvg(def.paths, "#ff4d1f", true));
+      mapInstance.addImage(key + "-flip", imgFlip);
+    }
+  }
+}
+
+// bearing (0-360, busola) -> { flip, rotate } tak, by ikona widziana z boku
+// NIGDY nie wyświetlała się do góry nogami — zamiast pełnej rotacji odbijamy
+// ją lustrzanie lewo/prawo i tylko przechylamy w pionie
+function iconOrientation(bearingDeg) {
+  const b = ((bearingDeg % 360) + 360) % 360;
+  const flip = b > 180;
+  const rotate = flip ? b - 270 : b - 90;
+  return { flip, rotate };
+}
+
+function buildIconPickerUI() {
+  const container = document.getElementById("iconPicker");
+  container.innerHTML = "";
+  Object.entries(ICON_LIBRARY).forEach(([key, def]) => {
+    const btn = document.createElement("div");
+    btn.className = "icon-choice" + (key === selectedIconKey ? " active" : "");
+    btn.title = def.label;
+    btn.innerHTML = buildIconSvg(def.paths, key === selectedIconKey ? "#ff4d1f" : "#1b1f23", false);
+    btn.addEventListener("click", () => {
+      selectedIconKey = key;
+      document.querySelectorAll(".icon-choice").forEach((el) => el.classList.remove("active"));
+      btn.classList.add("active");
+      updateMotoIconLayer();
+    });
+    container.appendChild(btn);
+  });
+}
+
+function updateMotoIconLayer() {
+  if (!map || !map.getLayer("moto-marker")) return;
+  map.setLayoutProperty("moto-marker", "icon-image", [
+    "case",
+    ["get", "flip"],
+    selectedIconKey + "-flip",
+    selectedIconKey,
+  ]);
 }
 
 /* ---------- 5) Mapa (MapLibre + OpenFreeMap, bez klucza) ---------- */
@@ -332,6 +518,11 @@ let lastRouteCoordinates = null;
 let animationRunning = false;
 let selectedDuration = 7;
 let waypointMarkers = []; // { marker, distanceAlong, visible }
+
+// "nerwowość" ruchu: częstotliwość obniżona (było 12 rad/s - zbyt "nerwowo"),
+// amplituda sterowana suwakiem w UI (0-10 -> 0-8°)
+const WOBBLE_FREQUENCY = 6;
+let wobbleAmplitude = 2.4; // domyślna wartość odpowiadająca pozycji suwaka = 3
 
 function rebuildWaypointMarkers(coordinates, cum, waypoints) {
   waypointMarkers.forEach((wm) => wm.marker.remove());
@@ -412,16 +603,16 @@ function showRouteOnMap(coordinates, waypoints) {
 
       map.addSource("moto", {
         type: "geojson",
-        data: { type: "Feature", geometry: { type: "Point", coordinates: coordinates[0] }, properties: { bearing: 0 } },
+        data: { type: "Feature", geometry: { type: "Point", coordinates: coordinates[0] }, properties: { bearing: 0, flip: false } },
       });
-      await loadMotoIcon(map);
+      await loadAllActivityIcons(map);
       map.addLayer({
         id: "moto-marker",
         type: "symbol",
         source: "moto",
         layout: {
-          "icon-image": "moto-icon",
-          "icon-size": 0.4,
+          "icon-image": ["case", ["get", "flip"], selectedIconKey + "-flip", selectedIconKey],
+          "icon-size": 0.55,
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
           "icon-allow-overlap": true,
@@ -463,7 +654,8 @@ async function animateRoute(coordinates, durationSeconds) {
   if (animationRunning) return;
   animationRunning = true;
 
-  await loadMotoIcon(map);
+  await loadAllActivityIcons(map);
+  updateMotoIconLayer();
 
   // animuj po przepróbkowanej, "lekkiej" wersji trasy — patrz komentarz przy resampleByDistance
   const fullCum = buildCumulativeDistances(coordinates);
@@ -494,13 +686,15 @@ async function animateRoute(coordinates, durationSeconds) {
       if (heading !== null) lastHeading = heading;
 
       // subtelne drganie kierunku ("nervous" ruch) — czysto wizualne, NIE wpływa
-      // na rzeczywistą (płynną) pozycję wzdłuż trasy, więc nie wraca zacinanie się
-      const wobble = Math.sin(elapsed * 12) * 5;
+      // na rzeczywistą (płynną) pozycję wzdłuż trasy, więc nie wraca zacinanie się.
+      // Częstotliwość i amplituda sterowane suwakiem (0 = wyłączone, 10 = maksimum).
+      const wobble = Math.sin(elapsed * WOBBLE_FREQUENCY) * wobbleAmplitude;
+      const { flip, rotate } = iconOrientation(lastHeading + wobble);
 
       map.getSource("moto").setData({
         type: "Feature",
         geometry: { type: "Point", coordinates: pos },
-        properties: { bearing: lastHeading + wobble },
+        properties: { bearing: rotate, flip },
       });
       map.getSource("trail").setData({
         type: "Feature",
@@ -589,6 +783,13 @@ document.getElementById("animateBtn").addEventListener("click", async () => {
     btn.textContent = "3. Animuj przejazd";
   }
 });
+
+document.getElementById("wobbleSlider").addEventListener("input", (e) => {
+  wobbleAmplitude = parseInt(e.target.value, 10) * 0.8; // 0-10 -> 0-8°
+});
+
+buildIconPickerUI();
 </script>
 </body>
+
 </html>
