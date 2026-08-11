@@ -60,15 +60,42 @@
   .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: #5b5f63; margin: 0 0 8px; }
   .stat { display: flex; justify-content: space-between; font-size: 0.92rem; padding: 3px 0; }
   .err { color: var(--err); font-size: 0.9rem; white-space: pre-wrap; }
-  #map {
+  #mapWrap {
     width: 100%;
     max-width: 420px;
     aspect-ratio: 9 / 16;
-    border-radius: 8px;
     margin: 14px auto 0;
-    border: 1px solid var(--line);
+    position: relative;
     display: none;
   }
+  #map, #stageCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+  }
+  #stageCanvas {
+    display: none; /* pokazywany tylko podczas animacji/eksportu - to on jest nagrywany */
+    background: #fff;
+  }
+  .photo-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.88rem;
+  }
+  .photo-row:last-child { border-bottom: none; }
+  .photo-row .num { width: 20px; color: #5b5f63; flex-shrink: 0; }
+  .photo-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .photo-row .thumb {
+    width: 36px; height: 36px; border-radius: 6px; object-fit: cover;
+    border: 1px solid var(--line); flex-shrink: 0; display: none;
+  }
+  .photo-row input[type="file"] { max-width: 90px; font-size: 0.75rem; }
   .duration-row {
     display: flex;
     gap: 8px;
@@ -149,6 +176,11 @@
   <div id="waypointsList" style="font-size:0.9rem"></div>
 </div>
 
+<div id="photosCard" class="card" style="display:none">
+  <h2>Zdjęcia na przystankach (opcjonalnie)</h2>
+  <div id="photosList"></div>
+</div>
+
 <div id="routeCard" class="card" style="display:none">
   <h2>Trasa</h2>
   <div class="stat"><span>Dystans drogowy</span><strong id="statDist">—</strong></div>
@@ -160,7 +192,10 @@
   <div class="err" id="errorText"></div>
 </div>
 
-<div id="map"></div>
+<div id="mapWrap">
+  <div id="map"></div>
+  <canvas id="stageCanvas"></canvas>
+</div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script>
@@ -535,15 +570,16 @@ let selectedDuration = 7;
 const WOBBLE_FREQUENCY = 5;
 let wobbleAmplitude = 0.8; // domyślna wartość odpowiadająca pozycji suwaka = 1
 
-let waypointFeatures = []; // { lng, lat, name, distanceAlong, revealed }
+let waypointFeatures = []; // { lng, lat, name, distanceAlong, revealed, photoImage }
 
 function rebuildWaypointMarkers(coordinates, cum, waypoints) {
-  waypointFeatures = waypoints.map((w) => ({
+  waypointFeatures = waypoints.map((w, i) => ({
     lng: w.lng,
     lat: w.lat,
     name: w.name,
     distanceAlong: distanceAlongForWaypoint(coordinates, cum, [w.lng, w.lat]),
     revealed: false,
+    photoImage: waypointPhotos[i]?.img ?? null,
   }));
   syncWaypointSource();
 }
@@ -586,8 +622,7 @@ function revealWaypointMarkersUpTo(distanceAlong) {
 }
 
 function showRouteOnMap(coordinates, waypoints) {
-  const mapEl = document.getElementById("map");
-  mapEl.style.display = "block";
+  document.getElementById("mapWrap").style.display = "block";
   const cum = buildCumulativeDistances(coordinates);
 
   const geojson = {
@@ -692,9 +727,93 @@ function setLayerVisible(layerId, visible) {
   }
 }
 
+/* ---------- Stage canvas: stała rozdzielczość 1080x1920, to on jest nagrywany ---------- */
+const STAGE_W = 1080, STAGE_H = 1920;
+let stageCanvas = null, stageCtx = null, frozenCanvas = null, frozenCtx = null;
+
+function ensureStageCanvas() {
+  if (stageCanvas) return;
+  stageCanvas = document.getElementById("stageCanvas");
+  stageCanvas.width = STAGE_W;
+  stageCanvas.height = STAGE_H;
+  stageCtx = stageCanvas.getContext("2d");
+  frozenCanvas = document.createElement("canvas");
+  frozenCanvas.width = STAGE_W;
+  frozenCanvas.height = STAGE_H;
+  frozenCtx = frozenCanvas.getContext("2d");
+}
+
+function compositeMapToStage() {
+  stageCtx.drawImage(map.getCanvas(), 0, 0, STAGE_W, STAGE_H);
+}
+
+function projectToStage(lng, lat) {
+  const p = map.project([lng, lat]); // CSS px względem kontenera mapy
+  const rect = map.getContainer().getBoundingClientRect();
+  return [(p.x / rect.width) * STAGE_W, (p.y / rect.height) * STAGE_H];
+}
+
+function drawImageCover(ctx, img, cx, cy, boxW, boxH) {
+  const imgRatio = img.width / img.height;
+  const boxRatio = boxW / boxH;
+  let sw, sh, sx, sy;
+  if (imgRatio > boxRatio) {
+    sh = img.height;
+    sw = sh * boxRatio;
+    sx = (img.width - sw) / 2;
+    sy = 0;
+  } else {
+    sw = img.width;
+    sh = sw / boxRatio;
+    sx = 0;
+    sy = (img.height - sh) / 2;
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, cx - boxW / 2, cy - boxH / 2, boxW, boxH);
+}
+
+// choreografia zdjęcia: 1s powiększanie, 2s trzymanie, 0.4s znikanie (szybciej niż wejście)
+const REVEAL_GROW_MS = 1000, REVEAL_HOLD_MS = 2000, REVEAL_SHRINK_MS = 400;
+const REVEAL_TOTAL_MS = REVEAL_GROW_MS + REVEAL_HOLD_MS + REVEAL_SHRINK_MS;
+
+function revealRadius(elapsedMs, badgeR, maxR) {
+  if (elapsedMs < REVEAL_GROW_MS) {
+    const t = elapsedMs / REVEAL_GROW_MS;
+    return badgeR + (maxR - badgeR) * (1 - Math.pow(1 - t, 3)); // ease-out
+  }
+  if (elapsedMs < REVEAL_GROW_MS + REVEAL_HOLD_MS) return maxR;
+  const t = Math.min((elapsedMs - REVEAL_GROW_MS - REVEAL_HOLD_MS) / REVEAL_SHRINK_MS, 1);
+  return maxR - (maxR - badgeR) * (t * t);
+}
+
+function drawPhotoRevealFrame(waypoint, elapsedMs) {
+  stageCtx.drawImage(frozenCanvas, 0, 0);
+  const [px, py] = projectToStage(waypoint.lng, waypoint.lat);
+  const maxR = Math.hypot(STAGE_W, STAGE_H) / 2 * 1.05;
+  const badgeR = STAGE_W * 0.02;
+  const r = revealRadius(elapsedMs, badgeR, maxR);
+
+  stageCtx.save();
+  stageCtx.beginPath();
+  stageCtx.arc(px, py, r, 0, Math.PI * 2);
+  stageCtx.clip();
+  if (waypoint.photoImage) {
+    drawImageCover(stageCtx, waypoint.photoImage, px, py, r * 2, r * 2);
+  } else {
+    stageCtx.fillStyle = "#1b1f23";
+    stageCtx.fill();
+  }
+  stageCtx.lineWidth = Math.max(3, r * 0.015);
+  stageCtx.strokeStyle = "#ffffff";
+  stageCtx.stroke();
+  stageCtx.restore();
+}
+
 async function animateRoute(coordinates, durationSeconds, onProgress) {
   if (animationRunning) return;
   animationRunning = true;
+
+  ensureStageCanvas();
+  document.getElementById("stageCanvas").style.display = "block";
 
   await loadAllActivityIcons(map);
   updateMotoIconLayer();
@@ -715,11 +834,29 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   let lastHeading = headingAtDistance(animCoords, cum, 0) ?? 0;
   const startTime = performance.now();
 
+  // stan maszyny: 'traveling' (jazda) <-> 'reveal' (pokaz zdjęcia, ruch wstrzymany)
+  let mode = "traveling";
+  let pausedAccumMs = 0;
+  let revealStartTime = 0;
+  let revealWaypoint = null;
+
   return new Promise((resolve) => {
     function frame(now) {
-      // KLUCZOWE: postęp liczony z czasu zegarowego, nie z liczby klatek —
-      // ta sama animacja trwa dokładnie `durationSeconds` niezależnie od 60/90/120 Hz ekranu
-      const elapsed = (now - startTime) / 1000;
+      if (mode === "reveal") {
+        const revealElapsed = now - revealStartTime;
+        drawPhotoRevealFrame(revealWaypoint, revealElapsed);
+        if (revealElapsed >= REVEAL_TOTAL_MS) {
+          mode = "traveling";
+          pausedAccumMs += REVEAL_TOTAL_MS;
+        }
+        requestAnimationFrame(frame);
+        return;
+      }
+
+      // KLUCZOWE: postęp liczony z czasu zegarowego (minus czas spędzony w pauzach na
+      // zdjęcia), nie z liczby klatek — ta sama trasa trwa dokładnie `durationSeconds`
+      // ruchu niezależnie od odświeżania ekranu; zdjęcia doliczają się jako dodatkowy czas.
+      const elapsed = (now - startTime - pausedAccumMs) / 1000;
       const progress = Math.min(elapsed / durationSeconds, 1);
       const distAlong = progress * total;
 
@@ -727,10 +864,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       const heading = headingAtDistance(animCoords, cum, distAlong);
       if (heading !== null) lastHeading = heading;
 
-      // subtelne drganie kierunku ("nervous" ruch) — czysto wizualne, NIE wpływa
-      // na rzeczywistą (płynną) pozycję wzdłuż trasy, więc nie wraca zacinanie się.
-      // Częstotliwość i amplituda sterowane suwakiem (0 = wyłączone, 10 = maksimum).
-      const wobble = Math.sin(elapsed * WOBBLE_FREQUENCY) * wobbleAmplitude;
+      const wobble = Math.sin((now - startTime) / 1000 * WOBBLE_FREQUENCY) * wobbleAmplitude;
       const { flip, rotate } = iconOrientation(lastHeading + wobble);
 
       map.getSource("moto").setData({
@@ -742,13 +876,30 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         type: "Feature",
         geometry: { type: "LineString", coordinates: trailUpToDistance(animCoords, cum, distAlong) },
       });
+
+      // sprawdź, czy właśnie minęliśmy punkt ze zdjęciem — jeśli tak, wstrzymaj jazdę i pokaż je
+      const justReached = waypointFeatures.find(
+        (w) => !w.revealed && distAlong >= w.distanceAlong && w.photoImage
+      );
       revealWaypointMarkersUpTo(distAlong);
+      compositeMapToStage();
       if (onProgress) onProgress(progress);
+
+      if (justReached) {
+        frozenCtx.drawImage(stageCanvas, 0, 0);
+        mode = "reveal";
+        revealStartTime = now;
+        revealWaypoint = justReached;
+        requestAnimationFrame(frame);
+        return;
+      }
 
       if (progress < 1) {
         requestAnimationFrame(frame);
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
+        compositeMapToStage();
+        document.getElementById("stageCanvas").style.display = "none";
         animationRunning = false;
         resolve();
       }
@@ -784,8 +935,8 @@ async function exportVideo(durationSeconds, onProgress) {
     throw new Error("Nie znalazłem obsługiwanego formatu wideo na tym urządzeniu.");
   }
 
-  const canvas = map.getCanvas();
-  const stream = canvas.captureStream(30); // stały 30fps, niezależny od tego kiedy dokładnie mapa się przerysowuje
+  ensureStageCanvas();
+  const stream = stageCanvas.captureStream(30); // stały 30fps, niezależny od tego kiedy dokładnie mapa się przerysowuje
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
   const chunks = [];
   recorder.ondataavailable = (e) => {
@@ -801,6 +952,7 @@ async function exportVideo(durationSeconds, onProgress) {
     await animateRoute(lastRouteCoordinates, durationSeconds, onProgress);
   } finally {
     recorder.stop();
+    document.getElementById("stageCanvas").style.display = "none";
   }
   await stopped;
 
@@ -820,6 +972,7 @@ async function exportVideo(durationSeconds, onProgress) {
 
 /* ---------- 4) Podpięcie UI ---------- */
 let lastWaypoints = null;
+let waypointPhotos = []; // trwałe (nie resetowane przy ponownym pobraniu trasy), indeksowane jak waypoints
 
 function showError(msg) {
   document.getElementById("errorBox").style.display = "block";
@@ -827,6 +980,53 @@ function showError(msg) {
 }
 function hideError() {
   document.getElementById("errorBox").style.display = "none";
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => resolve({ img, url });
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+function buildPhotosUI(waypoints) {
+  waypointPhotos = waypoints.map((_, i) => waypointPhotos[i] ?? null); // zachowaj już wybrane, dopasuj długość
+  const list = document.getElementById("photosList");
+  list.innerHTML = "";
+  waypoints.forEach((w, i) => {
+    const row = document.createElement("div");
+    row.className = "photo-row";
+    row.innerHTML = `
+      <span class="num">${i + 1}.</span>
+      <span class="name">${w.name}</span>
+      <img class="thumb" id="thumb-${i}">
+      <input type="file" accept="image/*" id="photoInput-${i}">
+    `;
+    list.appendChild(row);
+
+    const thumb = row.querySelector(`#thumb-${i}`);
+    if (waypointPhotos[i]) {
+      thumb.src = waypointPhotos[i].url;
+      thumb.style.display = "block";
+    }
+
+    row.querySelector(`#photoInput-${i}`).addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const { img, url } = await loadImageFromFile(file);
+        waypointPhotos[i] = { img, url };
+        thumb.src = url;
+        thumb.style.display = "block";
+      } catch {
+        showError(`Nie udało się wczytać zdjęcia dla punktu "${w.name}".`);
+      }
+    });
+  });
+  document.getElementById("photosCard").style.display = "block";
 }
 
 document.getElementById("parseBtn").addEventListener("click", () => {
@@ -838,6 +1038,7 @@ document.getElementById("parseBtn").addEventListener("click", () => {
     document.getElementById("waypointsList").innerHTML =
       waypoints.map((w) => `${w.name} (${w.lat.toFixed(3)}, ${w.lng.toFixed(3)})`).join("<br>");
     document.getElementById("waypointsCard").style.display = "block";
+    buildPhotosUI(waypoints);
     document.getElementById("routeBtn").disabled = false;
   } catch (e) {
     showError(e.message);
