@@ -510,15 +510,31 @@ function svgToImage(svgString) {
   });
 }
 
+let iconsLoadingPromise = null;
 async function loadAllActivityIcons(mapInstance) {
-  for (const [key, def] of Object.entries(ICON_LIBRARY)) {
-    if (!mapInstance.hasImage(key)) {
-      const img = await svgToImage(buildIconSvg(def.paths, false));
-      mapInstance.addImage(key, img);
+  if (iconsLoadingPromise) return iconsLoadingPromise;
+  iconsLoadingPromise = (async () => {
+    for (const [key, def] of Object.entries(ICON_LIBRARY)) {
+      if (!mapInstance.hasImage(key)) {
+        const img = await svgToImage(buildIconSvg(def.paths, false));
+        if (!mapInstance.hasImage(key)) mapInstance.addImage(key, img);
+      }
+      if (!mapInstance.hasImage(key + "-flip")) {
+        const imgFlip = await svgToImage(buildIconSvg(def.paths, true));
+        if (!mapInstance.hasImage(key + "-flip")) mapInstance.addImage(key + "-flip", imgFlip);
+      }
     }
-    if (!mapInstance.hasImage(key + "-flip")) {
-      const imgFlip = await svgToImage(buildIconSvg(def.paths, true));
-      mapInstance.addImage(key + "-flip", imgFlip);
+  })();
+  return iconsLoadingPromise;
+}
+
+// WAŻNE: wszystkie miniaturki zdjęć trzeba dodać do atlasu obrazów PRZED startem
+// pętli animacji, nie w jej trakcie — dodawanie nowego obrazu do mapy (addImage)
+// równolegle z dziesiątkami setData()/s powodowało błąd WebGL ("mismatched image size").
+async function preloadPhotoThumbnails(mapInstance) {
+  for (const w of waypointFeatures) {
+    if (w.photoImage && !mapInstance.hasImage(w.photoKey)) {
+      mapInstance.addImage(w.photoKey, buildCircularThumbnail(w.photoImage, 64));
     }
   }
 }
@@ -573,7 +589,7 @@ let routeColor = "#ff4d1f";
 // "nerwowość" ruchu: częstotliwość stała, amplituda wybierana z selektora 1-10
 // (docelowo ten parametr zniknie całkiem, jak tylko znajdziemy optymalną wartość)
 const WOBBLE_FREQUENCY = 5;
-let wobbleAmplitude = 0.8; // domyślna wartość odpowiadająca pozycji 1
+let wobbleAmplitude = 0; // domyślnie wyłączone (selektor startuje na 0)
 
 let waypointFeatures = []; // { lng, lat, name, distanceAlong, revealed, photoImage }
 
@@ -624,12 +640,11 @@ function syncPhotoBadgeSource() {
 }
 
 // wywoływane, gdy sekwencja pełnoekranowego pokazania zdjęcia się zakończy —
-// od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę
+// od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę.
+// Sam obraz jest już w atlasie mapy (patrz preloadPhotoThumbnails) — tu tylko
+// przełączamy stan, żadnego addImage w trakcie animacji.
 function settlePhotoBadge(waypoint) {
   if (!waypoint.photoImage || waypoint.settled) return;
-  if (!map.hasImage(waypoint.photoKey)) {
-    map.addImage(waypoint.photoKey, buildCircularThumbnail(waypoint.photoImage, 64));
-  }
   waypoint.settled = true;
   syncWaypointSource();
   syncPhotoBadgeSource();
@@ -954,6 +969,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   document.getElementById("stageCanvas").style.display = "block";
 
   await loadAllActivityIcons(map);
+  await preloadPhotoThumbnails(map);
   updateMotoIconLayer();
 
   // animuj po przepróbkowanej, "lekkiej" wersji trasy — patrz komentarz przy resampleByDistance
@@ -1283,7 +1299,7 @@ document.getElementById("animateBtn").addEventListener("click", async () => {
 });
 
 document.getElementById("wobbleSelect").addEventListener("change", (e) => {
-  wobbleAmplitude = parseInt(e.target.value, 10) * 0.8; // 1-10 -> 0.8-8°
+  wobbleAmplitude = parseInt(e.target.value, 10) * 0.6; // 0-10 -> 0-6°, 0 = całkowicie wyłączone
 });
 
 document.getElementById("sizeSlider").addEventListener("input", (e) => {
@@ -1319,11 +1335,11 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
 function buildWobbleSelectUI() {
   const select = document.getElementById("wobbleSelect");
   select.innerHTML = "";
-  for (let i = 1; i <= 10; i++) {
+  for (let i = 0; i <= 10; i++) {
     const opt = document.createElement("option");
     opt.value = i;
-    opt.textContent = i;
-    if (i === 1) opt.selected = true;
+    opt.textContent = i === 0 ? "0 (wyłączone)" : i;
+    if (i === 0) opt.selected = true;
     select.appendChild(opt);
   }
 }
