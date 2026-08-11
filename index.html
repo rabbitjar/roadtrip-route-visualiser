@@ -860,18 +860,43 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   let revealStartTime = 0;
   let revealWaypoint = null;
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     // KLUCZOWE: MapLibre renderuje swój canvas we WŁASNEJ, wewnętrznej pętli
     // (też opartej o requestAnimationFrame). Kopiowanie do stageCanvas od razu
     // po setData() łapało klatkę o krok do tyłu, zanim mapa zdążyła się faktycznie
     // przerysować — stąd ruch znacznika był niewidoczny. Kopiujemy dopiero
     // w evencie 'render', czyli gdy mapa naprawdę skończy malować.
     function onMapRender() {
-      if (mode === "traveling") compositeMapToStage();
+      if (mode === "traveling") {
+        try {
+          compositeMapToStage();
+        } catch (e) {
+          console.error("compositeMapToStage (render event):", e);
+        }
+      }
     }
     map.on("render", onMapRender);
 
+    function cleanupAfterFailure() {
+      map.off("render", onMapRender);
+      setLayerVisible("route-line", true);
+      setLayerVisible("trail-line", false);
+      setLayerVisible("moto-marker", false);
+      document.getElementById("stageCanvas").style.display = "none";
+      animationRunning = false;
+    }
+
     function frame(now) {
+      try {
+        frameInner(now);
+      } catch (e) {
+        console.error("Błąd w pętli animacji:", e);
+        cleanupAfterFailure();
+        reject(new Error(`Animacja przerwana błędem: ${e.message}`));
+      }
+    }
+
+    function frameInner(now) {
       if (mode === "reveal") {
         const revealElapsed = now - revealStartTime;
         drawPhotoRevealFrame(revealWaypoint, revealElapsed);
@@ -1110,11 +1135,14 @@ document.querySelectorAll(".duration-btn").forEach((btn) => {
 
 document.getElementById("animateBtn").addEventListener("click", async () => {
   if (!lastRouteCoordinates) return;
+  hideError();
   const btn = document.getElementById("animateBtn");
   btn.disabled = true;
   btn.textContent = `Animacja (${selectedDuration}s)…`;
   try {
     await animateRoute(lastRouteCoordinates, selectedDuration);
+  } catch (e) {
+    showError(e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = "3. Animuj przejazd";
