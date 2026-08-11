@@ -129,65 +129,111 @@
   }
   .icon-choice.active { border-color: var(--route); background: #fff2ec; }
   .icon-choice svg { width: 100%; height: 100%; }
+  .screen h1 { margin-top: 4px; }
+  .nav-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .nav-row button { margin-top: 0; }
+  .secondary-btn {
+    background: #fff;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  .options-toggle {
+    background: #fff;
+    color: var(--ink);
+    border: 1px dashed var(--line);
+    font-weight: 500;
+    font-size: 0.9rem;
+  }
+  .options-panel { margin-top: 4px; }
+  #playAnimBtn { background: var(--route); }
+  #exportBtn { background: #1b1f23; font-size: 1.05rem; padding: 16px; }
 </style>
 </head>
 <body>
 
-<h1>Podgląd trasy motocyklowej</h1>
-<p class="sub">Wklej pełny link Google Maps z trasą. Krótkie linki (maps.app.goo.gl) otwórz najpierw w przeglądarce i skopiuj pełny URL z paska adresu.</p>
-
-<textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..."></textarea>
-
-<button id="parseBtn">1. Wyciągnij punkty z linku</button>
-<button id="routeBtn" disabled>2. Pokaż trasę na mapie</button>
-
-<div class="card">
-  <h2>Prędkość posuwania znacznika</h2>
-  <input type="text" inputmode="decimal" id="speedInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+<div id="screen1" class="screen">
+  <h1>Podgląd trasy motocyklowej</h1>
+  <p class="sub">Wklej pełny link Google Maps z trasą. Krótkie linki (maps.app.goo.gl) otwórz najpierw w przeglądarce i skopiuj pełny URL z paska adresu.</p>
+  <textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..."></textarea>
+  <button id="step1NextBtn">Dalej: Wyciągnij punkty →</button>
 </div>
 
-<div class="card">
-  <h2>Ikona</h2>
-  <div id="iconPicker" class="icon-picker"></div>
+<div id="screen2" class="screen" style="display:none">
+  <h1>Punkty i trasa</h1>
+  <div id="waypointsCard" class="card">
+    <h2>Punkty trasy</h2>
+    <div id="waypointsList" style="font-size:0.9rem"></div>
+  </div>
+  <div id="routeCard" class="card">
+    <h2>Trasa</h2>
+    <div class="stat"><span>Dystans drogowy</span><strong id="statDist">—</strong></div>
+    <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
+  </div>
+
+  <button class="options-toggle" data-target="opts2">⚙ Opcje (zdjęcia, ikona, kolor) ▾</button>
+  <div id="opts2" class="options-panel" style="display:none">
+    <div id="photosCard" class="card">
+      <h2>Zdjęcia na przystankach (opcjonalnie)</h2>
+      <div id="photosList"></div>
+    </div>
+    <div class="card">
+      <h2>Ikona</h2>
+      <div id="iconPicker" class="icon-picker"></div>
+    </div>
+    <div class="card">
+      <h2>Kolor trasy</h2>
+      <div id="colorPicker" class="color-picker"></div>
+    </div>
+  </div>
+
+  <div class="nav-row">
+    <button class="secondary-btn" id="step2BackBtn">← Wstecz</button>
+    <button id="step2NextBtn">Dalej: Pokaż animację →</button>
+  </div>
 </div>
 
-<div class="card">
-  <h2>Kolor trasy</h2>
-  <div id="colorPicker" class="color-picker"></div>
+<div id="screen3" class="screen" style="display:none">
+  <h1>Animacja</h1>
+  <button id="playAnimBtn">▶ Odtwórz animację</button>
+
+  <button class="options-toggle" data-target="opts3">⚙ Opcje (prędkość, nerwowość, rozmiar) ▾</button>
+  <div id="opts3" class="options-panel" style="display:none">
+    <div class="card">
+      <h2>Prędkość posuwania znacznika</h2>
+      <input type="text" inputmode="decimal" id="speedInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+    </div>
+    <div class="card">
+      <h2>Nerwowość ruchu</h2>
+      <select id="wobbleSelect" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;"></select>
+    </div>
+    <div class="card">
+      <h2>Rozmiar ikony</h2>
+      <input type="range" id="sizeSlider" min="2" max="8" value="4" style="width:100%">
+    </div>
+    <div class="card">
+      <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s)</h2>
+      <input type="text" inputmode="decimal" id="holdInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+    </div>
+  </div>
+
+  <div class="nav-row">
+    <button class="secondary-btn" id="step3BackBtn">← Wstecz</button>
+    <button id="step3NextBtn">Dalej: Pobierz →</button>
+  </div>
 </div>
 
-<div class="card">
-  <h2>Nerwowość ruchu</h2>
-  <select id="wobbleSelect" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;"></select>
-</div>
-
-<div class="card">
-  <h2>Rozmiar ikony</h2>
-  <input type="range" id="sizeSlider" min="2" max="8" value="4" style="width:100%">
-</div>
-
-<div class="card">
-  <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s)</h2>
-  <input type="text" inputmode="decimal" id="holdInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
-</div>
-
-<button id="animateBtn" disabled>3. Animuj przejazd</button>
-<button id="exportBtn" disabled>4. Pobierz wideo</button>
-
-<div id="waypointsCard" class="card" style="display:none">
-  <h2>Punkty trasy</h2>
-  <div id="waypointsList" style="font-size:0.9rem"></div>
-</div>
-
-<div id="photosCard" class="card" style="display:none">
-  <h2>Zdjęcia na przystankach (opcjonalnie)</h2>
-  <div id="photosList"></div>
-</div>
-
-<div id="routeCard" class="card" style="display:none">
-  <h2>Trasa</h2>
-  <div class="stat"><span>Dystans drogowy</span><strong id="statDist">—</strong></div>
-  <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
+<div id="screen4" class="screen" style="display:none">
+  <h1>Pobierz wideo</h1>
+  <p class="sub">Nagranie użyje ustawień z poprzedniego kroku, w tym samym formacie co podgląd animacji.</p>
+  <button id="exportBtn">Pobierz wideo</button>
+  <div class="nav-row">
+    <button class="secondary-btn" id="step4BackBtn">← Wstecz</button>
+    <button class="secondary-btn" id="restartBtn">Zacznij od nowa</button>
+  </div>
 </div>
 
 <div id="errorBox" class="card" style="display:none">
@@ -546,13 +592,16 @@ async function loadAllActivityIcons(mapInstance) {
   return iconsLoadingPromise;
 }
 
-// WAŻNE: wszystkie miniaturki zdjęć trzeba dodać do atlasu obrazów PRZED startem
-// pętli animacji, nie w jej trakcie — dodawanie nowego obrazu do mapy (addImage)
-// równolegle z dziesiątkami setData()/s powodowało błąd WebGL ("mismatched image size").
-async function preloadPhotoThumbnails(mapInstance) {
+// WAŻNE: miniaturki NIE trafiają do atlasu obrazów MapLibre (map.addImage) w ogóle.
+// Ten atlas jest pomyślany pod stały, niewielki zestaw sprite'ów, nie pod rosnącą
+// w trakcie sesji liczbę zdjęć użytkownika — to najpewniej realna przyczyna
+// powtarzającego się błędu WebGL "mismatched image size". Zamiast tego trzymamy
+// gotowe, przycięte-do-koła miniaturki jako zwykłe canvasy w pamięci i rysujemy
+// je bezpośrednio na stageCanvas (zwykłe drawImage, żadnego WebGL).
+function preloadPhotoThumbnails() {
   for (const w of waypointFeatures) {
-    if (w.photoImage && !mapInstance.hasImage(w.photoKey)) {
-      mapInstance.addImage(w.photoKey, buildCircularThumbnail(w.photoImage, 64));
+    if (w.photoImage && !w.thumbnailCanvas) {
+      w.thumbnailCanvas = buildCircularThumbnail(w.photoImage, 64);
     }
   }
 }
@@ -631,7 +680,7 @@ function rebuildWaypointMarkers(coordinates, cum, waypoints) {
 // który nagrywa MediaRecorder. DOM-owe markery byłyby niewidoczne w wyeksportowanym pliku.
 function syncWaypointSource() {
   if (!map || !map.getSource("waypoint-points")) return;
-  // punkty z już "osadzoną" miniaturką zdjęcia pokazują się przez waypoint-photo-badges,
+  // punkty z już "osadzoną" miniaturką zdjęcia pokazują się przez drawSettledPhotoBadges (canvas),
   // więc tutaj wystarczy zwykła kropka dla reszty odsłoniętych
   const revealed = waypointFeatures.filter((w) => w.revealed && !w.settled);
   map.getSource("waypoint-points").setData({
@@ -645,27 +694,35 @@ function syncWaypointSource() {
 }
 
 function syncPhotoBadgeSource() {
-  if (!map || !map.getSource("waypoint-photos")) return;
-  const settled = waypointFeatures.filter((w) => w.settled);
-  map.getSource("waypoint-photos").setData({
-    type: "FeatureCollection",
-    features: settled.map((w) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [w.lng, w.lat] },
-      properties: { photoKey: w.photoKey },
-    })),
+  // no-op: miniaturki rysowane bezpośrednio na stageCanvas w drawSettledPhotoBadges(),
+  // nie przez źródło/warstwę MapLibre — patrz komentarz przy preloadPhotoThumbnails
+}
+
+// rysuje miniaturki osadzonych zdjęć na stageCanvas (wywoływane po każdym
+// skopiowaniu mapy na canvas, żeby zawsze były na wierzchu)
+function drawSettledPhotoBadges() {
+  const r = 12; // promień w px MapLibre (zgodny z circle-radius znaczników)
+  waypointFeatures.forEach((w) => {
+    if (!w.settled || !w.thumbnailCanvas) return;
+    const [x, y] = projectToStage(w.lng, w.lat);
+    const scale = STAGE_W / map.getContainer().getBoundingClientRect().width;
+    const dr = r * scale;
+    stageCtx.save();
+    stageCtx.beginPath();
+    stageCtx.arc(x, y, dr, 0, Math.PI * 2);
+    stageCtx.clip();
+    stageCtx.drawImage(w.thumbnailCanvas, x - dr, y - dr, dr * 2, dr * 2);
+    stageCtx.restore();
   });
 }
 
 // wywoływane, gdy sekwencja pełnoekranowego pokazania zdjęcia się zakończy —
-// od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę.
-// Sam obraz jest już w atlasie mapy (patrz preloadPhotoThumbnails) — tu tylko
-// przełączamy stan, żadnego addImage w trakcie animacji.
+// od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę
+// (rysowaną na canvasie, patrz drawSettledPhotoBadges)
 function settlePhotoBadge(waypoint) {
   if (!waypoint.photoImage || waypoint.settled) return;
   waypoint.settled = true;
   syncWaypointSource();
-  syncPhotoBadgeSource();
 }
 
 function hideAllPhotoBadges() {
@@ -777,24 +834,6 @@ function showRouteOnMap(coordinates, waypoints) {
           "circle-color": "#ffffff",
           "circle-stroke-width": 3,
           "circle-stroke-color": "#1b1f23",
-        },
-      });
-
-      // miniaturki zdjęć: pokazują się w znaczniku DOPIERO gdy sekwencja
-      // pełnoekranowego pokazania danego zdjęcia się zakończy (patrz settlePhotoBadge)
-      map.addSource("waypoint-photos", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: "waypoint-photo-badges",
-        type: "symbol",
-        source: "waypoint-photos",
-        layout: {
-          "icon-image": ["get", "photoKey"],
-          "icon-size": 24 / 64, // dopasowane do promienia 12 (średnica 24) przy rastrze 64x64
-          "icon-allow-overlap": true,
-          "icon-ignore-placement": true,
         },
       });
 
@@ -987,7 +1026,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   document.getElementById("stageCanvas").style.display = "block";
 
   await loadAllActivityIcons(map);
-  await preloadPhotoThumbnails(map);
+  preloadPhotoThumbnails();
   updateMotoIconLayer();
 
   // animuj po przepróbkowanej, "lekkiej" wersji trasy — patrz komentarz przy resampleByDistance
@@ -1024,6 +1063,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       if (mode === "traveling") {
         try {
           compositeMapToStage();
+          drawSettledPhotoBadges();
           drawDistanceCounter(currentDistanceKm);
         } catch (e) {
           console.error("compositeMapToStage (render event):", e);
@@ -1098,6 +1138,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
 
       if (justReached) {
         compositeMapToStage(); // upewnij się, że ostatnia klatka przed zamrożeniem jest aktualna
+        drawSettledPhotoBadges();
         drawDistanceCounter(currentDistanceKm);
         frozenCtx.drawImage(stageCanvas, 0, 0);
         mode = "reveal";
@@ -1112,6 +1153,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
         compositeMapToStage();
+        drawSettledPhotoBadges();
         drawDistanceCounter(currentDistanceKm);
         map.off("render", onMapRender);
         document.getElementById("stageCanvas").style.display = "none";
@@ -1244,43 +1286,33 @@ function buildPhotosUI(waypoints) {
   document.getElementById("photosCard").style.display = "block";
 }
 
-document.getElementById("parseBtn").addEventListener("click", () => {
+document.getElementById("step1NextBtn").addEventListener("click", async () => {
   hideError();
   const url = document.getElementById("linkInput").value.trim();
+  const btn = document.getElementById("step1NextBtn");
+  btn.disabled = true;
   try {
+    btn.textContent = "Wyciągam punkty…";
     const { waypoints } = parseGoogleMapsLink(url);
     lastWaypoints = waypoints;
+    buildPhotosUI(waypoints);
+
+    btn.textContent = "Liczę trasę…";
+    const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(waypoints);
+    lastRouteCoordinates = coordinates;
+
     document.getElementById("waypointsList").innerHTML =
       waypoints.map((w) => `${w.name} (${w.lat.toFixed(3)}, ${w.lng.toFixed(3)})`).join("<br>");
-    document.getElementById("waypointsCard").style.display = "block";
-    buildPhotosUI(waypoints);
-    document.getElementById("routeBtn").disabled = false;
-  } catch (e) {
-    showError(e.message);
-    document.getElementById("routeBtn").disabled = true;
-  }
-});
-
-document.getElementById("routeBtn").addEventListener("click", async () => {
-  if (!lastWaypoints) return;
-  hideError();
-  const btn = document.getElementById("routeBtn");
-  btn.disabled = true;
-  btn.textContent = "Liczę trasę…";
-  try {
-    const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(lastWaypoints);
     document.getElementById("statDist").textContent = `${(distanceMeters / 1000).toFixed(0)} km`;
     document.getElementById("statDur").textContent = `${(durationSeconds / 3600).toFixed(1)} h`;
-    document.getElementById("routeCard").style.display = "block";
-    lastRouteCoordinates = coordinates;
-    showRouteOnMap(coordinates, lastWaypoints);
-    document.getElementById("animateBtn").disabled = false;
-    document.getElementById("exportBtn").disabled = false;
+    showRouteOnMap(coordinates, waypoints);
+
+    goToScreen(2);
   } catch (e) {
     showError(e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = "2. Pokaż trasę na mapie";
+    btn.textContent = "Dalej: Wyciągnij punkty →";
   }
 });
 
@@ -1300,22 +1332,6 @@ document.getElementById("holdInput").addEventListener("input", (e) => {
   REVEAL_HOLD_MS = parseDecimalInput(e.target.value, 1) * 1000;
 });
 
-document.getElementById("animateBtn").addEventListener("click", async () => {
-  if (!lastRouteCoordinates) return;
-  hideError();
-  const btn = document.getElementById("animateBtn");
-  btn.disabled = true;
-  btn.textContent = `Animacja (prędkość ${speedMultiplier})…`;
-  try {
-    await animateRoute(lastRouteCoordinates, selectedDuration);
-  } catch (e) {
-    showError(e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "3. Animuj przejazd";
-  }
-});
-
 document.getElementById("wobbleSelect").addEventListener("change", (e) => {
   wobbleAmplitude = parseInt(e.target.value, 10) * 0.6; // 0-10 -> 0-6°, 0 = całkowicie wyłączone
 });
@@ -1325,29 +1341,68 @@ document.getElementById("sizeSlider").addEventListener("input", (e) => {
   updateMotoIconLayer();
 });
 
+async function playAnimation() {
+  if (!lastRouteCoordinates) return;
+  hideError();
+  const btn = document.getElementById("playAnimBtn");
+  btn.disabled = true;
+  btn.textContent = `Animacja (prędkość ${speedMultiplier})…`;
+  try {
+    await animateRoute(lastRouteCoordinates, selectedDuration);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "▶ Odtwórz animację";
+  }
+}
+document.getElementById("playAnimBtn").addEventListener("click", playAnimation);
+
 document.getElementById("exportBtn").addEventListener("click", async () => {
   if (!lastRouteCoordinates) return;
   hideError();
-  const animBtn = document.getElementById("animateBtn");
   const btn = document.getElementById("exportBtn");
   btn.disabled = true;
-  animBtn.disabled = true;
   btn.textContent = "Nagrywam… 0%";
   try {
     const result = await exportVideo(selectedDuration, (progress) => {
       btn.textContent = `Nagrywam… ${Math.round(progress * 100)}%`;
     });
-    btn.textContent = `Pobrano (.${result.ext})`;
+    btn.textContent = `Pobrano (.${result.ext}) ✓`;
     setTimeout(() => {
-      btn.textContent = "4. Pobierz wideo";
+      btn.textContent = "Pobierz wideo";
     }, 2500);
   } catch (e) {
     showError(e.message);
-    btn.textContent = "4. Pobierz wideo";
+    btn.textContent = "Pobierz wideo";
   } finally {
     btn.disabled = false;
-    animBtn.disabled = false;
   }
+});
+
+/* ---------- Nawigacja między ekranami ---------- */
+function goToScreen(n) {
+  for (let i = 1; i <= 4; i++) {
+    document.getElementById(`screen${i}`).style.display = i === n ? "block" : "none";
+  }
+  window.scrollTo({ top: 0, behavior: "instant" });
+  if (n === 3) playAnimation(); // od razu pokaż efekt wchodząc na ekran animacji
+}
+
+document.getElementById("step2BackBtn").addEventListener("click", () => goToScreen(1));
+document.getElementById("step2NextBtn").addEventListener("click", () => goToScreen(3));
+document.getElementById("step3BackBtn").addEventListener("click", () => goToScreen(2));
+document.getElementById("step3NextBtn").addEventListener("click", () => goToScreen(4));
+document.getElementById("step4BackBtn").addEventListener("click", () => goToScreen(3));
+document.getElementById("restartBtn").addEventListener("click", () => goToScreen(1));
+
+document.querySelectorAll(".options-toggle").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.dataset.target);
+    const isHidden = target.style.display === "none";
+    target.style.display = isHidden ? "block" : "none";
+    btn.textContent = btn.textContent.replace(isHidden ? "▾" : "▴", isHidden ? "▴" : "▾");
+  });
 });
 
 function buildWobbleSelectUI() {
