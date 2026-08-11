@@ -253,10 +253,28 @@ function parseGoogleMapsLink(url) {
 /* ---------- 2) Realny routing (OSRM demo) ---------- */
 const OSRM_DEMO_BASE = "https://router.project-osrm.org/route/v1/driving";
 
-async function fetchRoadRoute(waypoints) {
+async function fetchRoadRoute(waypoints, attempt = 1) {
   const coordsParam = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
   const url = `${OSRM_DEMO_BASE}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
-  const res = await fetch(url);
+
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (networkErr) {
+    // "Failed to fetch" — serwer demo OSRM jest darmowy, bez gwarancji dostępności
+    // i bez SLA; przy częstym testowaniu bywa chwilowo nieosiągalny. Ponawiamy
+    // automatycznie 2 razy z krótkim odstępem, zanim pokażemy błąd użytkownikowi.
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, 1200 * attempt));
+      return fetchRoadRoute(waypoints, attempt + 1);
+    }
+    throw new Error(
+      "Nie udało się połączyć z serwerem routingu (Failed to fetch) po 3 próbach.\n" +
+      "To darmowy serwer demo OSRM bez gwarancji dostępności — przy częstym testowaniu " +
+      "bywa chwilowo przeciążony. Sprawdź połączenie z internetem i spróbuj ponownie za chwilę."
+    );
+  }
+
   if (!res.ok) throw new Error(`Serwer routingu zwrócił błąd HTTP ${res.status}.`);
   const data = await res.json();
   if (data.code !== "Ok" || !data.routes?.length) {
