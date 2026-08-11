@@ -861,6 +861,16 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   let revealWaypoint = null;
 
   return new Promise((resolve) => {
+    // KLUCZOWE: MapLibre renderuje swój canvas we WŁASNEJ, wewnętrznej pętli
+    // (też opartej o requestAnimationFrame). Kopiowanie do stageCanvas od razu
+    // po setData() łapało klatkę o krok do tyłu, zanim mapa zdążyła się faktycznie
+    // przerysować — stąd ruch znacznika był niewidoczny. Kopiujemy dopiero
+    // w evencie 'render', czyli gdy mapa naprawdę skończy malować.
+    function onMapRender() {
+      if (mode === "traveling") compositeMapToStage();
+    }
+    map.on("render", onMapRender);
+
     function frame(now) {
       if (mode === "reveal") {
         const revealElapsed = now - revealStartTime;
@@ -902,10 +912,10 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         (w) => !w.revealed && distAlong >= w.distanceAlong && w.photoImage
       );
       revealWaypointMarkersUpTo(distAlong);
-      compositeMapToStage();
       if (onProgress) onProgress(progress);
 
       if (justReached) {
+        compositeMapToStage(); // upewnij się, że ostatnia klatka przed zamrożeniem jest aktualna
         frozenCtx.drawImage(stageCanvas, 0, 0);
         mode = "reveal";
         revealStartTime = now;
@@ -919,6 +929,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
         compositeMapToStage();
+        map.off("render", onMapRender);
         document.getElementById("stageCanvas").style.display = "none";
         animationRunning = false;
         resolve();
