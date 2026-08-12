@@ -709,16 +709,20 @@ function syncPhotoBadgeSource() {
 // skopiowaniu mapy na canvas, żeby zawsze były na wierzchu)
 function drawSettledPhotoBadges() {
   const r = 12; // promień w px MapLibre (zgodny z circle-radius znaczników)
+  const THUMB_SIZE = 64, THUMB_MARGIN = 3; // musi być zgodne z buildCircularThumbnail
   waypointFeatures.forEach((w) => {
     if (!w.settled || !w.thumbnailCanvas) return;
     const [x, y] = projectToStage(w.lng, w.lat);
     const scale = STAGE_W / map.getContainer().getBoundingClientRect().width;
     const dr = r * scale;
+    // kompensacja marginesu wokół widocznego koła w miniaturce, żeby jego
+    // realny (widoczny) promień odpowiadał dokładnie promieniowi natywnej kropki
+    const destSize = dr * 2 * (THUMB_SIZE / (THUMB_SIZE - THUMB_MARGIN * 2));
     stageCtx.save();
     stageCtx.beginPath();
     stageCtx.arc(x, y, dr, 0, Math.PI * 2);
     stageCtx.clip();
-    stageCtx.drawImage(w.thumbnailCanvas, x - dr, y - dr, dr * 2, dr * 2);
+    stageCtx.drawImage(w.thumbnailCanvas, x - destSize / 2, y - destSize / 2, destSize, destSize);
     stageCtx.restore();
   });
 }
@@ -839,7 +843,7 @@ function showRouteOnMap(coordinates, waypoints) {
         paint: {
           "circle-radius": 12,
           "circle-color": "#ffffff",
-          "circle-stroke-width": 3,
+          "circle-stroke-width": 2.5,
           "circle-stroke-color": "#1b1f23",
         },
       });
@@ -918,7 +922,7 @@ function buildCircularThumbnail(img, sizePx) {
   ctx.clip();
   drawImageCover(ctx, img, r, r, sizePx, sizePx);
   ctx.restore();
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 2.5;
   ctx.strokeStyle = "#1b1f23";
   ctx.beginPath();
   ctx.arc(r, r, r - 2, 0, Math.PI * 2);
@@ -1053,6 +1057,16 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   const animCoords = resampleByDistance(coordinates, fullCum, 300);
   const cum = buildCumulativeDistances(animCoords);
   const total = cum[cum.length - 1];
+
+  // KLUCZOWE: distanceAlong przystanków liczony był względem PEŁNEJ geometrii
+  // (fullCum), a jazda odbywa się po przepróbkowanej wersji o nieznacznie innym
+  // całkowitym dystansie — dla punktów blisko samego końca trasy ta drobna
+  // różnica mogła sprawiać, że animacja formalnie nigdy ich nie "dogania" (dist
+  // nigdy nie osiąga progu), więc reveal zdjęcia się nie odpalał. Przeliczamy
+  // na skalę TEJ konkretnej animacji, żeby były gwarantowanie osiągalne.
+  waypointFeatures.forEach((w) => {
+    w.distanceAlong = distanceAlongForWaypoint(animCoords, cum, [w.lng, w.lat]);
+  });
 
   // trasa i przystanki niewidoczne na starcie, motocykl w punkcie startowym
   setLayerVisible("route-line", false);
