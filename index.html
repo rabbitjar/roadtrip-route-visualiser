@@ -862,8 +862,15 @@ function fitToRoute(coordinates) {
     (b, c) => b.extend(c),
     new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
   );
+  // dodatkowy padding od góry, proporcjonalny do zarezerwowanego obszaru licznika km
+  // (COUNTER_AREA_H liczony w skali stageCanvas 1080x1920, tu przeliczony na realny rozmiar mapy)
+  const rect = map.getContainer().getBoundingClientRect();
+  const topPadding = 40 + (COUNTER_AREA_H / STAGE_H) * rect.height;
   // "Full route" tryb kamery: dopasuj kadr RAZ, przed animacją — bez zoomowania w trakcie jazdy
-  map.fitBounds(bounds, { padding: 40, duration: 0 });
+  map.fitBounds(bounds, {
+    padding: { top: topPadding, bottom: 40, left: 40, right: 40 },
+    duration: 0,
+  });
 }
 
 function setLayerVisible(layerId, visible) {
@@ -922,28 +929,32 @@ function buildCircularThumbnail(img, sizePx) {
 // narastający licznik przejechanych km w prawym dolnym rogu — rysowany
 // bezpośrednio na stageCanvas (musi być na canvasie, żeby trafił do nagrania)
 let currentDistanceKm = 0;
+// zarezerwowany obszar w lewym górnym rogu pod licznik — używane też przez
+// fitToRoute (dodatkowy padding od góry), żeby trasa w niego nie wchodziła
+const COUNTER_AREA_H = 150;
+
 function drawDistanceCounter(km) {
   const text = `${km.toFixed(1)} km`;
   stageCtx.save();
   stageCtx.font = "600 40px -apple-system, Roboto, sans-serif";
-  stageCtx.textAlign = "right";
+  stageCtx.textAlign = "left";
   stageCtx.textBaseline = "alphabetic";
   const pad = 28;
   const textW = stageCtx.measureText(text).width;
   const boxW = textW + 36, boxH = 60;
-  const x = STAGE_W - pad, y = STAGE_H - pad;
+  const x = pad, y = pad + boxH;
 
   stageCtx.fillStyle = "rgba(27,31,35,0.7)";
   if (stageCtx.roundRect) {
     stageCtx.beginPath();
-    stageCtx.roundRect(x - boxW, y - boxH, boxW, boxH, 12);
+    stageCtx.roundRect(x, y - boxH, boxW, boxH, 12);
     stageCtx.fill();
   } else {
-    stageCtx.fillRect(x - boxW, y - boxH, boxW, boxH);
+    stageCtx.fillRect(x, y - boxH, boxW, boxH);
   }
 
   stageCtx.fillStyle = "#ffffff";
-  stageCtx.fillText(text, x - 16, y - 16);
+  stageCtx.fillText(text, x + 18, y - 16);
   stageCtx.restore();
 }
 
@@ -1164,7 +1175,10 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         drawSettledPhotoBadges();
         drawDistanceCounter(currentDistanceKm);
         map.off("render", onMapRender);
-        document.getElementById("stageCanvas").style.display = "none";
+        // UWAGA: stageCanvas celowo NIE chowa się tutaj — zostaje widoczny jako stan
+        // spoczynkowy (ma miniaturki zdjęć i licznik km, których "goła" mapa nie ma).
+        // Mapa i tak jest zablokowana, więc nic się nie traci. Chowamy go dopiero
+        // przy wyjściu z ekranu animacji (patrz step3BackBtn / resetToStaticPreview).
         animationRunning = false;
         resolve();
       }
@@ -1217,7 +1231,6 @@ async function exportVideo(durationSeconds, onProgress) {
     await animateRoute(lastRouteCoordinates, durationSeconds, onProgress);
   } finally {
     recorder.stop();
-    document.getElementById("stageCanvas").style.display = "none";
   }
   await stopped;
 
@@ -1397,11 +1410,21 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
 });
 
 /* ---------- Nawigacja między ekranami ---------- */
+function resetToStaticPreview() {
+  document.getElementById("stageCanvas").style.display = "none";
+  if (map) {
+    setLayerVisible("route-line", true);
+    setLayerVisible("trail-line", false);
+    setLayerVisible("moto-marker", false);
+  }
+}
+
 function goToScreen(n) {
   for (let i = 1; i <= 4; i++) {
     document.getElementById(`screen${i}`).style.display = i === n ? "block" : "none";
   }
   window.scrollTo({ top: 0, behavior: "instant" });
+  if (n === 2) resetToStaticPreview(); // wracamy z animacji - pokaż z powrotem statyczną trasę, nie zamrożoną klatkę
   if (n === 3) playAnimation(); // od razu pokaż efekt wchodząc na ekran animacji
 }
 
