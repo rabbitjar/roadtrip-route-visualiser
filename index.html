@@ -215,6 +215,10 @@
       <input type="range" id="sizeSlider" min="2" max="8" value="4" style="width:100%">
     </div>
     <div class="card">
+      <h2>Czas powiększania zdjęcia (s)</h2>
+      <input type="text" inputmode="decimal" id="growInput" value="1.5" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+    </div>
+    <div class="card">
       <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s)</h2>
       <input type="text" inputmode="decimal" id="holdInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
     </div>
@@ -680,9 +684,12 @@ function rebuildWaypointMarkers(coordinates, cum, waypoints) {
 // który nagrywa MediaRecorder. DOM-owe markery byłyby niewidoczne w wyeksportowanym pliku.
 function syncWaypointSource() {
   if (!map || !map.getSource("waypoint-points")) return;
-  // punkty z już "osadzoną" miniaturką zdjęcia pokazują się przez drawSettledPhotoBadges (canvas),
-  // więc tutaj wystarczy zwykła kropka dla reszty odsłoniętych
-  const revealed = waypointFeatures.filter((w) => w.revealed && !w.settled);
+  // WAŻNE: kropka pokazuje się dla WSZYSTKICH odsłoniętych punktów, także tych
+  // z osadzoną miniaturką — to niezawodny spód widoczny zawsze na "surowej" mapie.
+  // Miniaturka na canvasie (drawSettledPhotoBadges) tylko go przykrywa/wzbogaca
+  // W TRAKCIE animacji; gdyby to ona była jedynym źródłem, punkty znikałyby
+  // za każdym razem, gdy stageCanvas się chowa (np. po zakończeniu animacji).
+  const revealed = waypointFeatures.filter((w) => w.revealed);
   map.getSource("waypoint-points").setData({
     type: "FeatureCollection",
     features: revealed.map((w) => ({
@@ -959,7 +966,8 @@ function drawImageCover(ctx, img, cx, cy, boxW, boxH) {
 }
 
 // choreografia zdjęcia: 1s powiększanie, 2s trzymanie, 0.4s znikanie (szybciej niż wejście)
-const REVEAL_GROW_MS = 1000, REVEAL_SHRINK_MS = 400;
+let REVEAL_GROW_MS = 1500; // wydłużone o 50% (było 1000ms), edytowalne w Opcjach
+const REVEAL_SHRINK_MS = 400;
 let REVEAL_HOLD_MS = 1000; // sterowane polem tekstowym w UI, domyślnie 1s
 function revealTotalMs() {
   return REVEAL_GROW_MS + REVEAL_HOLD_MS + REVEAL_SHRINK_MS;
@@ -1334,6 +1342,10 @@ document.getElementById("speedInput").addEventListener("input", (e) => {
 
 document.getElementById("holdInput").addEventListener("input", (e) => {
   REVEAL_HOLD_MS = parseDecimalInput(e.target.value, 1) * 1000;
+});
+
+document.getElementById("growInput").addEventListener("input", (e) => {
+  REVEAL_GROW_MS = parseDecimalInput(e.target.value, 1.5) * 1000;
 });
 
 document.getElementById("wobbleSelect").addEventListener("change", (e) => {
