@@ -605,7 +605,7 @@ async function loadAllActivityIcons(mapInstance) {
 function preloadPhotoThumbnails() {
   for (const w of waypointFeatures) {
     if (w.photoImage && !w.thumbnailCanvas) {
-      w.thumbnailCanvas = buildCircularThumbnail(w.photoImage, 64);
+      w.thumbnailCanvas = buildSquareThumbnail(w.photoImage, 64);
     }
   }
 }
@@ -676,66 +676,59 @@ function rebuildWaypointMarkers(coordinates, cum, waypoints) {
     photoImage: waypointPhotos[i]?.img ?? null,
   }));
   syncWaypointSource();
-  syncPhotoBadgeSource();
 }
 
 // KLUCZOWE dla eksportu wideo: przystanki żyją jako natywne źródło/warstwa mapy
 // (nie jako DOM-owe maplibregl.Marker), więc trafiają do tego samego canvasu,
 // który nagrywa MediaRecorder. DOM-owe markery byłyby niewidoczne w wyeksportowanym pliku.
 function syncWaypointSource() {
-  if (!map || !map.getSource("waypoint-points")) return;
-  // WAŻNE: kropka pokazuje się dla WSZYSTKICH odsłoniętych punktów, także tych
-  // z osadzoną miniaturką — to niezawodny spód widoczny zawsze na "surowej" mapie.
-  // Miniaturka na canvasie (drawSettledPhotoBadges) tylko go przykrywa/wzbogaca
-  // W TRAKCIE animacji; gdyby to ona była jedynym źródłem, punkty znikałyby
-  // za każdym razem, gdy stageCanvas się chowa (np. po zakończeniu animacji).
-  const revealed = waypointFeatures.filter((w) => w.revealed);
-  map.getSource("waypoint-points").setData({
-    type: "FeatureCollection",
-    features: revealed.map((w) => ({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [w.lng, w.lat] },
-      properties: { name: w.name },
-    })),
-  });
+  // no-op: znaczniki (zwykłe i ze zdjęciem) rysowane w całości na stageCanvas
+  // przez drawWaypointMarkers() — patrz komentarz tam, dlaczego to jedno
+  // wspólne źródło pozycji zamiast dwóch niezależnych systemów.
 }
 
-function syncPhotoBadgeSource() {
-  // no-op: miniaturki rysowane bezpośrednio na stageCanvas w drawSettledPhotoBadges(),
-  // nie przez źródło/warstwę MapLibre — patrz komentarz przy preloadPhotoThumbnails
-}
-
-// rysuje miniaturki osadzonych zdjęć na stageCanvas (wywoływane po każdym
-// skopiowaniu mapy na canvas, żeby zawsze były na wierzchu)
-function drawSettledPhotoBadges() {
-  const r = 12; // promień w px MapLibre (zgodny z circle-radius znaczników)
-  const OVERSCAN = 1.25; // celowy zapas, żeby miniaturka na pewno w pełni zakrywała kropkę pod spodem
+// Rysuje WSZYSTKIE odsłonięte znaczniki przystanków — zwykłe kropki i miniaturki
+// zdjęć — jedną funkcją, jednym przeliczeniem współrzędnych (projectToStage).
+// Wcześniej zwykłe kropki żyły w natywnej warstwie MapLibre (WebGL), a miniaturki
+// osobno na canvasie — dwa niezależne układy współrzędnych do zgrania piksel
+// w piksel to źródło notorycznych drobnych niedopasowań ("białe rąbki"). Teraz
+// jest tylko jeden system, więc nie ma czego rozjeżdżać.
+function drawWaypointMarkers() {
+  const rect = map.getContainer().getBoundingClientRect();
+  const scale = STAGE_W / rect.width;
+  const r = 12 * scale;
   waypointFeatures.forEach((w) => {
-    if (!w.settled || !w.thumbnailCanvas) return;
+    if (!w.revealed) return;
     const [x, y] = projectToStage(w.lng, w.lat);
-    const scale = STAGE_W / map.getContainer().getBoundingClientRect().width;
-    const dr = r * scale * OVERSCAN;
     stageCtx.save();
     stageCtx.beginPath();
-    stageCtx.arc(x, y, dr, 0, Math.PI * 2);
+    stageCtx.arc(x, y, r, 0, Math.PI * 2);
     stageCtx.clip();
-    stageCtx.drawImage(w.thumbnailCanvas, x - dr, y - dr, dr * 2, dr * 2);
+    if (w.settled && w.thumbnailCanvas) {
+      stageCtx.drawImage(w.thumbnailCanvas, x - r, y - r, r * 2, r * 2);
+    } else {
+      stageCtx.fillStyle = "#ffffff";
+      stageCtx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
     stageCtx.restore();
+    stageCtx.lineWidth = 2 * scale;
+    stageCtx.strokeStyle = "#1b1f23";
+    stageCtx.beginPath();
+    stageCtx.arc(x, y, r, 0, Math.PI * 2);
+    stageCtx.stroke();
   });
 }
 
 // wywoływane, gdy sekwencja pełnoekranowego pokazania zdjęcia się zakończy —
 // od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę
-// (rysowaną na canvasie, patrz drawSettledPhotoBadges)
+// (rysowaną na canvasie, patrz drawWaypointMarkers)
 function settlePhotoBadge(waypoint) {
   if (!waypoint.photoImage || waypoint.settled) return;
   waypoint.settled = true;
-  syncWaypointSource();
 }
 
 function hideAllPhotoBadges() {
   waypointFeatures.forEach((w) => (w.settled = false));
-  syncPhotoBadgeSource();
 }
 
 function showAllWaypointMarkers() {
@@ -829,33 +822,33 @@ function showRouteOnMap(coordinates, waypoints) {
       setLayerVisible("moto-marker", false);
       setLayerVisible("trail-line", false);
 
-      map.addSource("waypoint-points", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: "waypoint-circles",
-        type: "circle",
-        source: "waypoint-points",
-        paint: {
-          "circle-radius": 12,
-          "circle-color": "#ffffff",
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#1b1f23",
-        },
-      });
-
       rebuildWaypointMarkers(coordinates, cum, waypoints);
       showAllWaypointMarkers();
 
       fitToRoute(coordinates);
+      showStaticPreviewOnStage();
     });
   } else {
     map.getSource("route").setData(geojson);
     rebuildWaypointMarkers(coordinates, cum, waypoints);
     showAllWaypointMarkers();
     fitToRoute(coordinates);
+    showStaticPreviewOnStage();
   }
+}
+
+// Statyczny podgląd (krok 2) idzie teraz też przez stageCanvas, bo znaczniki
+// przystanków są rysowane wyłącznie na canvasie (patrz drawWaypointMarkers) —
+// od usunięcia natywnej warstwy MapLibre "goła" mapa nie ma jak ich pokazać.
+function showStaticPreviewOnStage() {
+  ensureStageCanvas();
+  const paint = () => {
+    compositeMapToStage();
+    drawWaypointMarkers();
+  };
+  map.once("render", paint); // po przerysowaniu wywołanym przez fitBounds
+  paint(); // i od razu, na wypadek gdyby mapa już była gotowa
+  document.getElementById("stageCanvas").style.display = "block";
 }
 
 function fitToRoute(coordinates) {
@@ -906,24 +899,15 @@ function projectToStage(lng, lat) {
   return [(p.x / rect.width) * STAGE_W, (p.y / rect.height) * STAGE_H];
 }
 
-// okrągła miniaturka zdjęcia do znacznika (po zakończeniu pełnoekranowego pokazania)
-function buildCircularThumbnail(img, sizePx) {
+// kwadratowa miniaturka zdjęcia (cover-fit) do znacznika po zakończeniu reveal.
+// CELOWO bez własnego okrągłego przycięcia/obwódki — to robi wyłącznie
+// drawWaypointMarkers(), żeby był tylko jeden układ maskowania, nie dwa do zgrania.
+function buildSquareThumbnail(img, sizePx) {
   const c = document.createElement("canvas");
   c.width = sizePx;
   c.height = sizePx;
   const ctx = c.getContext("2d");
-  const r = sizePx / 2;
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(r, r, r - 3, 0, Math.PI * 2);
-  ctx.clip();
-  drawImageCover(ctx, img, r, r, sizePx, sizePx);
-  ctx.restore();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#1b1f23";
-  ctx.beginPath();
-  ctx.arc(r, r, r - 2, 0, Math.PI * 2);
-  ctx.stroke();
+  drawImageCover(ctx, img, sizePx / 2, sizePx / 2, sizePx, sizePx);
   return c;
 }
 
@@ -1027,7 +1011,12 @@ function drawPhotoRevealFrame(waypoint, elapsedMs) {
   stageCtx.arc(ox, oy, r, 0, Math.PI * 2);
   stageCtx.clip();
   if (waypoint.photoImage) {
-    drawImageCover(stageCtx, waypoint.photoImage, ox, oy, r * 2, r * 2);
+    // KLUCZOWE: obraz rysowany zawsze tak, jakby już wypełniał cały kadr —
+    // cover-fit do RZECZYWISTEGO prostokąta 1080x1920 (nie do kwadratu opisanego
+    // na kole!), wyśrodkowany na środku ekranu. Animuje się tylko kółko-maska,
+    // nigdy sam obraz — dzięki temu zdjęcie 9:16 przy pełnym rozmiarze pasuje
+    // idealnie, bez dodatkowego, zbędnego przycinania.
+    drawImageCover(stageCtx, waypoint.photoImage, STAGE_W / 2, STAGE_H / 2, STAGE_W, STAGE_H);
   } else {
     stageCtx.fillStyle = "#1b1f23";
     stageCtx.fill();
@@ -1093,7 +1082,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       if (mode === "traveling") {
         try {
           compositeMapToStage();
-          drawSettledPhotoBadges();
+          drawWaypointMarkers();
           drawDistanceCounter(currentDistanceKm);
         } catch (e) {
           console.error("compositeMapToStage (render event):", e);
@@ -1107,7 +1096,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       setLayerVisible("route-line", true);
       setLayerVisible("trail-line", false);
       setLayerVisible("moto-marker", false);
-      document.getElementById("stageCanvas").style.display = "none";
+      showStaticPreviewOnStage();
       animationRunning = false;
     }
 
@@ -1168,7 +1157,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
 
       if (justReached) {
         compositeMapToStage(); // upewnij się, że ostatnia klatka przed zamrożeniem jest aktualna
-        drawSettledPhotoBadges();
+        drawWaypointMarkers();
         drawDistanceCounter(currentDistanceKm);
         frozenCtx.drawImage(stageCanvas, 0, 0);
         mode = "reveal";
@@ -1183,7 +1172,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
         compositeMapToStage();
-        drawSettledPhotoBadges();
+        drawWaypointMarkers();
         drawDistanceCounter(currentDistanceKm);
         map.off("render", onMapRender);
         // UWAGA: stageCanvas celowo NIE chowa się tutaj — zostaje widoczny jako stan
@@ -1422,11 +1411,11 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
 
 /* ---------- Nawigacja między ekranami ---------- */
 function resetToStaticPreview() {
-  document.getElementById("stageCanvas").style.display = "none";
   if (map) {
     setLayerVisible("route-line", true);
     setLayerVisible("trail-line", false);
     setLayerVisible("moto-marker", false);
+    showStaticPreviewOnStage();
   }
 }
 
