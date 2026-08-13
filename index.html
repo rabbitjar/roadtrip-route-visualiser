@@ -173,15 +173,49 @@
     border: 1px solid var(--line);
     cursor: pointer;
   }
+  .source-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .tab-btn {
+    flex: 1;
+    margin-top: 0;
+    padding: 10px;
+    font-size: 0.88rem;
+    background: #fff;
+    color: #5b5f63;
+    border: 1px solid var(--line);
+  }
+  .tab-btn.active {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+  }
 </style>
 </head>
 <body>
 
 <div id="screen1" class="screen">
   <h1>Podgląd trasy motocyklowej</h1>
-  <p class="sub">Wklej pełny link Google Maps z trasą. Krótkie linki (maps.app.goo.gl) otwórz najpierw w przeglądarce i skopiuj pełny URL z paska adresu.</p>
-  <textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..."></textarea>
-  <button id="step1NextBtn">Dalej: Wyciągnij punkty →</button>
+
+  <div class="source-tabs">
+    <button type="button" class="tab-btn active" data-tab="link">Link Google Maps</button>
+    <button type="button" class="tab-btn" data-tab="photos">Zdjęcia z telefonu</button>
+  </div>
+
+  <div id="sourceLink" class="source-panel">
+    <p class="sub">Wklej pełny link Google Maps z trasą. Krótkie linki (maps.app.goo.gl) otwórz najpierw w przeglądarce i skopiuj pełny URL z paska adresu.</p>
+    <textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..."></textarea>
+    <button id="step1NextBtn">Dalej: Wyciągnij punkty →</button>
+  </div>
+
+  <div id="sourcePhotos" class="source-panel" style="display:none">
+    <p class="sub">Wgraj do 15 zdjęć z telefonu z lokalizacją GPS w danych EXIF. Trasa powstanie z tych lokalizacji, w kolejności chronologicznej wg czasu zrobienia zdjęcia — bez linku Google Maps.</p>
+    <input type="file" accept="image/*" multiple id="photoSetInput">
+    <div id="photoSetStatus" style="font-size:0.85rem; color:#5b5f63; margin-top:8px;"></div>
+    <button id="step1PhotosNextBtn" disabled>Dalej: Zbuduj trasę ze zdjęć →</button>
+  </div>
 </div>
 
 <div id="screen2" class="screen" style="display:none">
@@ -299,6 +333,7 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr/dist/lite.umd.js"></script>
 <script>
 "use strict";
 
@@ -1342,6 +1377,94 @@ function loadImageFromFile(file) {
     img.src = url;
   });
 }
+
+/* ---------- Alternatywne źródło trasy: zbiór zdjęć z EXIF GPS + czas ---------- */
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("sourceLink").style.display = btn.dataset.tab === "link" ? "block" : "none";
+    document.getElementById("sourcePhotos").style.display = btn.dataset.tab === "photos" ? "block" : "none";
+  });
+});
+
+const MAX_PHOTO_SET = 15;
+let photoSetEntries = []; // { lat, lng, timestamp, img, url }, posortowane chronologicznie
+
+document.getElementById("photoSetInput").addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files);
+  const status = document.getElementById("photoSetStatus");
+  const nextBtn = document.getElementById("step1PhotosNextBtn");
+  nextBtn.disabled = true;
+  photoSetEntries = [];
+  if (files.length === 0) return;
+
+  if (files.length > MAX_PHOTO_SET) {
+    status.style.color = "#b3261e";
+    status.textContent = `Wybrano ${files.length} zdjęć — maksymalnie ${MAX_PHOTO_SET}. Wybierz mniej.`;
+    return;
+  }
+
+  status.style.color = "#5b5f63";
+  const entries = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    status.textContent = `Odczytuję lokalizację ze zdjęć… ${i + 1}/${files.length}`;
+    let exif = null;
+    try {
+      exif = await exifr.parse(file);
+    } catch {
+      exif = null;
+    }
+    if (!exif || typeof exif.latitude !== "number" || typeof exif.longitude !== "number") {
+      status.style.color = "#b3261e";
+      status.textContent = `Zdjęcie „${file.name}” nie ma lokalizacji GPS w danych EXIF (np. zrzut ekranu albo przesłane przez komunikator usuwa te dane) — usuń je z wyboru i spróbuj ponownie.`;
+      return;
+    }
+    const { img, url } = await loadImageFromFile(file);
+    // DateTimeOriginal bywa nieobecne (np. zdjęcie edytowane) - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
+    const timestamp = exif.DateTimeOriginal instanceof Date ? exif.DateTimeOriginal.getTime() : file.lastModified;
+    entries.push({ lat: exif.latitude, lng: exif.longitude, timestamp, img, url });
+  }
+
+  entries.sort((a, b) => a.timestamp - b.timestamp);
+  photoSetEntries = entries;
+  status.style.color = "#2d6a4f";
+  status.textContent = `Gotowe: ${entries.length} zdjęć posortowanych chronologicznie.`;
+  nextBtn.disabled = false;
+});
+
+document.getElementById("step1PhotosNextBtn").addEventListener("click", async () => {
+  if (photoSetEntries.length < 2) return;
+  hideError();
+  const btn = document.getElementById("step1PhotosNextBtn");
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  try {
+    const waypoints = photoSetEntries.map((e, i) => ({ name: `Zdjęcie ${i + 1}`, lat: e.lat, lng: e.lng }));
+    lastWaypoints = waypoints;
+    // zdjęcia są już "dołączone" - to one były źródłem trasy
+    waypointPhotos = photoSetEntries.map((e) => ({ img: e.img, url: e.url }));
+
+    btn.textContent = "Liczę trasę…";
+    const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(waypoints);
+    lastRouteCoordinates = coordinates;
+
+    document.getElementById("waypointsList").innerHTML =
+      waypoints.map((w) => `${w.name} (${w.lat.toFixed(3)}, ${w.lng.toFixed(3)})`).join("<br>");
+    document.getElementById("statDist").textContent = `${(distanceMeters / 1000).toFixed(0)} km`;
+    document.getElementById("statDur").textContent = `${(durationSeconds / 3600).toFixed(1)} h`;
+    showRouteOnMap(coordinates, waypoints);
+    buildPhotosUI(waypoints); // pokaże już dołączone zdjęcia na liście
+
+    goToScreen(2);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+});
 
 function buildPhotosUI(waypoints) {
   waypointPhotos = waypoints.map((_, i) => waypointPhotos[i] ?? null); // zachowaj już wybrane, dopasuj długość
