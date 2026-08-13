@@ -1171,16 +1171,31 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         requestAnimationFrame(frame);
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
-        compositeMapToStage();
-        drawWaypointMarkers();
-        drawDistanceCounter(currentDistanceKm);
+        setLayerVisible("moto-marker", false); // na końcu znacznik dojazdu nie powinien nakładać się na znacznik celu
         map.off("render", onMapRender);
-        // UWAGA: stageCanvas celowo NIE chowa się tutaj — zostaje widoczny jako stan
-        // spoczynkowy (ma miniaturki zdjęć i licznik km, których "goła" mapa nie ma).
-        // Mapa i tak jest zablokowana, więc nic się nie traci. Chowamy go dopiero
-        // przy wyjściu z ekranu animacji (patrz step3BackBtn / resetToStaticPreview).
-        animationRunning = false;
-        resolve();
+
+        const paintFinal = () => {
+          compositeMapToStage();
+          drawWaypointMarkers();
+          drawDistanceCounter(currentDistanceKm);
+        };
+        paintFinal(); // natychmiastowy fallback, na wypadek gdyby render już się wykonał
+
+        // UWAGA: ukrycie warstwy w MapLibre jest asynchroniczne (ten sam mechanizm
+        // co wcześniej z ruchem znacznika) — czekamy na realne przemalowanie, zanim
+        // złapiemy "czystą" ostatnią klatkę, plus mały bufor, żeby MediaRecorder
+        // przy eksporcie na pewno zdążył ją nagrać zanim recorder.stop() się wykona.
+        map.once("render", () => {
+          paintFinal();
+          setTimeout(() => {
+            // UWAGA: stageCanvas celowo NIE chowa się tutaj — zostaje widoczny jako stan
+            // spoczynkowy (ma miniaturki zdjęć i licznik km, których "goła" mapa nie ma).
+            // Mapa i tak jest zablokowana, więc nic się nie traci. Chowamy go dopiero
+            // przy wyjściu z ekranu animacji (patrz step3BackBtn / resetToStaticPreview).
+            animationRunning = false;
+            resolve();
+          }, 100);
+        });
       }
     }
     requestAnimationFrame(frame);
