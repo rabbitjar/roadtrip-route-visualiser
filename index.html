@@ -192,6 +192,40 @@
     color: #fff;
     border-color: var(--ink);
   }
+  .photoset-row {
+    display: flex;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+    align-items: flex-start;
+  }
+  .photoset-row:last-child { border-bottom: none; }
+  .photoset-row .num { color: #5b5f63; font-size: 0.85rem; flex-shrink: 0; width: 16px; padding-top: 8px; }
+  .photoset-row .thumb {
+    width: 52px; height: 52px; border-radius: 8px; object-fit: cover;
+    border: 1px solid var(--line); flex-shrink: 0;
+  }
+  .photoset-row .thumb-empty { background: #eee; }
+  .photoset-info { flex: 1; min-width: 0; }
+  .photoset-name { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .photoset-status { font-size: 0.8rem; margin-top: 2px; }
+  .photoset-status.ok { color: #2d6a4f; }
+  .photoset-status.warn { color: #b3261e; }
+  .manual-coords-row { display: flex; gap: 6px; margin-top: 6px; }
+  .manual-coords-input {
+    flex: 1; min-width: 0; padding: 6px 8px; font-size: 0.82rem;
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .manual-coords-btn {
+    margin-top: 0; padding: 6px 10px; font-size: 0.8rem;
+    background: var(--ink); color: #fff; border: none; border-radius: 6px;
+  }
+  .photoset-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+  .ps-replace-btn, .ps-remove-btn {
+    margin-top: 0; width: 32px; height: 32px; padding: 0;
+    background: #fff; border: 1px solid var(--line); border-radius: 6px; font-size: 0.95rem;
+  }
+  .ps-remove-btn { color: #b3261e; }
 </style>
 </head>
 <body>
@@ -212,8 +246,10 @@
 
   <div id="sourcePhotos" class="source-panel" style="display:none">
     <p class="sub">Wgraj do 15 zdjęć z telefonu z lokalizacją GPS w danych EXIF. Trasa powstanie z tych lokalizacji, w kolejności chronologicznej wg czasu zrobienia zdjęcia — bez linku Google Maps.</p>
-    <input type="file" accept="image/*" multiple id="photoSetInput">
-    <div id="photoSetStatus" style="font-size:0.85rem; color:#5b5f63; margin-top:8px;"></div>
+    <input type="file" accept="image/*" multiple id="photoSetInput" style="display:none">
+    <input type="file" accept="image/*" id="photoSetReplaceInput" style="display:none">
+    <button type="button" id="photoSetAddBtn" class="secondary-btn">+ Wybierz zdjęcia</button>
+    <div id="photoSetList"></div>
     <button id="step1PhotosNextBtn" disabled>Dalej: Zbuduj trasę ze zdjęć →</button>
   </div>
 </div>
@@ -387,6 +423,21 @@ function parseGoogleMapsLink(url) {
 const OSRM_DEMO_BASE = "https://router.project-osrm.org/route/v1/driving";
 
 async function fetchRoadRoute(waypoints, attempt = 1) {
+  // walidacja PRZED wysłaniem - łapie złe dane (np. NaN z błędnie wpisanych
+  // ręcznie współrzędnych) wcześnie, ze wskazaniem, który punkt jest zły,
+  // zamiast niejasnego HTTP 400 z serwera routingu
+  waypoints.forEach((w, i) => {
+    if (
+      !Number.isFinite(w.lat) || !Number.isFinite(w.lng) ||
+      w.lat < -90 || w.lat > 90 || w.lng < -180 || w.lng > 180
+    ) {
+      throw new Error(
+        `Punkt ${i + 1} (${w.name ?? "bez nazwy"}) ma nieprawidłowe współrzędne ` +
+        `(${w.lat}, ${w.lng}). Popraw go i spróbuj ponownie.`
+      );
+    }
+  });
+
   const coordsParam = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
   const url = `${OSRM_DEMO_BASE}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
 
@@ -408,7 +459,18 @@ async function fetchRoadRoute(waypoints, attempt = 1) {
     );
   }
 
-  if (!res.ok) throw new Error(`Serwer routingu zwrócił błąd HTTP ${res.status}.`);
+  if (!res.ok) {
+    // pokaż realną treść błędu z OSRM (zwykle konkretny powód), nie tylko goły kod HTTP
+    let detail = "";
+    try {
+      const body = await res.json();
+      if (body?.message) detail = `: ${body.message}`;
+      else if (body?.code) detail = `: ${body.code}`;
+    } catch {
+      // odpowiedź nie była JSON-em - trudno, zostaje sam kod HTTP
+    }
+    throw new Error(`Serwer routingu zwrócił błąd HTTP ${res.status}${detail}.`);
+  }
   const data = await res.json();
   if (data.code !== "Ok" || !data.routes?.length) {
     throw new Error(`Nie udało się policzyć trasy (code: ${data.code}).`);
@@ -1389,62 +1451,163 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 });
 
 const MAX_PHOTO_SET = 15;
-let photoSetEntries = []; // { lat, lng, timestamp, img, url }, posortowane chronologicznie
+let photoSetEntries = []; // { id, name, lat, lng, timestamp, img, url, status: 'ok'|'no-gps' }
+let photoSetIdCounter = 0;
+let replacingEntryId = null;
+
+// format "52.2297, 21.0122" — dokładnie to, co Google Maps kopiuje do schowka
+// po długim przytrzymaniu punktu na mapie
+function parseLatLngPaste(str) {
+  const parts = String(str).split(",").map((s) => parseFloat(s.trim()));
+  if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) return null;
+  const [lat, lng] = parts;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
+async function processPhotoFile(file) {
+  const { img, url } = await loadImageFromFile(file);
+  let exif = null;
+  try {
+    exif = await exifr.parse(file);
+  } catch {
+    exif = null;
+  }
+  const hasGps = exif && typeof exif.latitude === "number" && typeof exif.longitude === "number";
+  // DateTimeOriginal bywa nieobecne (np. zdjęcie edytowane) - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
+  const timestamp = exif?.DateTimeOriginal instanceof Date ? exif.DateTimeOriginal.getTime() : file.lastModified;
+  return {
+    id: `p${photoSetIdCounter++}`,
+    name: file.name,
+    img,
+    url,
+    timestamp,
+    lat: hasGps ? exif.latitude : null,
+    lng: hasGps ? exif.longitude : null,
+    status: hasGps ? "ok" : "no-gps",
+  };
+}
+
+function updatePhotoSetNextBtn() {
+  const allOk = photoSetEntries.length >= 2 && photoSetEntries.every((e) => e.status === "ok");
+  document.getElementById("step1PhotosNextBtn").disabled = !allOk;
+}
+
+function renderPhotoSetList() {
+  const container = document.getElementById("photoSetList");
+  container.innerHTML = "";
+  const sorted = [...photoSetEntries].sort((a, b) => a.timestamp - b.timestamp);
+
+  sorted.forEach((entry, i) => {
+    const row = document.createElement("div");
+    row.className = "photoset-row";
+    const statusHtml =
+      entry.status === "ok"
+        ? `<div class="photoset-status ok">✓ ${entry.lat.toFixed(4)}, ${entry.lng.toFixed(4)}</div>`
+        : `<div class="photoset-status warn">⚠ brak lokalizacji GPS w zdjęciu</div>
+           <div class="manual-coords-row">
+             <input type="text" placeholder="52.2297, 21.0122 (wklej z Google Maps)" class="manual-coords-input" data-id="${entry.id}">
+             <button type="button" class="manual-coords-btn" data-id="${entry.id}">Ustaw</button>
+           </div>`;
+    row.innerHTML = `
+      <span class="num">${i + 1}.</span>
+      <img class="thumb" src="${entry.url}">
+      <div class="photoset-info">
+        <div class="photoset-name">${entry.name}</div>
+        ${statusHtml}
+      </div>
+      <div class="photoset-actions">
+        <button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień zdjęcie">⟳</button>
+        <button type="button" class="ps-remove-btn" data-id="${entry.id}" title="Usuń">✕</button>
+      </div>
+    `;
+    container.appendChild(row);
+  });
+
+  container.querySelectorAll(".ps-remove-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      photoSetEntries = photoSetEntries.filter((e) => e.id !== btn.dataset.id);
+      renderPhotoSetList();
+      updatePhotoSetNextBtn();
+    });
+  });
+  container.querySelectorAll(".ps-replace-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      replacingEntryId = btn.dataset.id;
+      document.getElementById("photoSetReplaceInput").click();
+    });
+  });
+  container.querySelectorAll(".manual-coords-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const input = container.querySelector(`.manual-coords-input[data-id="${btn.dataset.id}"]`);
+      const parsed = parseLatLngPaste(input.value);
+      if (!parsed) {
+        input.style.borderColor = "#b3261e";
+        return;
+      }
+      const entry = photoSetEntries.find((e) => e.id === btn.dataset.id);
+      if (entry) {
+        entry.lat = parsed.lat;
+        entry.lng = parsed.lng;
+        entry.status = "ok";
+        renderPhotoSetList();
+        updatePhotoSetNextBtn();
+      }
+    });
+  });
+
+  document.getElementById("photoSetAddBtn").style.display =
+    photoSetEntries.length >= MAX_PHOTO_SET ? "none" : "block";
+}
+
+document.getElementById("photoSetAddBtn").addEventListener("click", () => {
+  document.getElementById("photoSetInput").click();
+});
 
 document.getElementById("photoSetInput").addEventListener("change", async (e) => {
   const files = Array.from(e.target.files);
-  const status = document.getElementById("photoSetStatus");
-  const nextBtn = document.getElementById("step1PhotosNextBtn");
-  nextBtn.disabled = true;
-  photoSetEntries = [];
+  e.target.value = ""; // pozwala wybrać te same pliki ponownie w przyszłości
   if (files.length === 0) return;
+  hideError();
 
-  if (files.length > MAX_PHOTO_SET) {
-    status.style.color = "#b3261e";
-    status.textContent = `Wybrano ${files.length} zdjęć — maksymalnie ${MAX_PHOTO_SET}. Wybierz mniej.`;
+  const remaining = MAX_PHOTO_SET - photoSetEntries.length;
+  if (files.length > remaining) {
+    showError(`Możesz dodać jeszcze maksymalnie ${remaining} zdjęć (limit ${MAX_PHOTO_SET} łącznie).`);
     return;
   }
-
-  status.style.color = "#5b5f63";
-  const entries = [];
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    status.textContent = `Odczytuję lokalizację ze zdjęć… ${i + 1}/${files.length}`;
-    let exif = null;
-    try {
-      exif = await exifr.parse(file);
-    } catch {
-      exif = null;
-    }
-    if (!exif || typeof exif.latitude !== "number" || typeof exif.longitude !== "number") {
-      status.style.color = "#b3261e";
-      status.textContent = `Zdjęcie „${file.name}” nie ma lokalizacji GPS w danych EXIF (np. zrzut ekranu albo przesłane przez komunikator usuwa te dane) — usuń je z wyboru i spróbuj ponownie.`;
-      return;
-    }
-    const { img, url } = await loadImageFromFile(file);
-    // DateTimeOriginal bywa nieobecne (np. zdjęcie edytowane) - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
-    const timestamp = exif.DateTimeOriginal instanceof Date ? exif.DateTimeOriginal.getTime() : file.lastModified;
-    entries.push({ lat: exif.latitude, lng: exif.longitude, timestamp, img, url });
+  for (const file of files) {
+    photoSetEntries.push(await processPhotoFile(file));
+    renderPhotoSetList();
   }
+  updatePhotoSetNextBtn();
+});
 
-  entries.sort((a, b) => a.timestamp - b.timestamp);
-  photoSetEntries = entries;
-  status.style.color = "#2d6a4f";
-  status.textContent = `Gotowe: ${entries.length} zdjęć posortowanych chronologicznie.`;
-  nextBtn.disabled = false;
+document.getElementById("photoSetReplaceInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || !replacingEntryId) return;
+  const idx = photoSetEntries.findIndex((entry) => entry.id === replacingEntryId);
+  if (idx === -1) return;
+  const newEntry = await processPhotoFile(file);
+  newEntry.id = replacingEntryId; // zachowaj pozycję na liście
+  photoSetEntries[idx] = newEntry;
+  replacingEntryId = null;
+  renderPhotoSetList();
+  updatePhotoSetNextBtn();
 });
 
 document.getElementById("step1PhotosNextBtn").addEventListener("click", async () => {
-  if (photoSetEntries.length < 2) return;
+  const sorted = [...photoSetEntries].sort((a, b) => a.timestamp - b.timestamp);
+  if (sorted.length < 2) return;
   hideError();
   const btn = document.getElementById("step1PhotosNextBtn");
   btn.disabled = true;
   const originalLabel = btn.textContent;
   try {
-    const waypoints = photoSetEntries.map((e, i) => ({ name: `Zdjęcie ${i + 1}`, lat: e.lat, lng: e.lng }));
+    const waypoints = sorted.map((e, i) => ({ name: `Zdjęcie ${i + 1}`, lat: e.lat, lng: e.lng }));
     lastWaypoints = waypoints;
     // zdjęcia są już "dołączone" - to one były źródłem trasy
-    waypointPhotos = photoSetEntries.map((e) => ({ img: e.img, url: e.url }));
+    waypointPhotos = sorted.map((e) => ({ img: e.img, url: e.url }));
 
     btn.textContent = "Liczę trasę…";
     const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(waypoints);
@@ -1463,6 +1626,7 @@ document.getElementById("step1PhotosNextBtn").addEventListener("click", async ()
   } finally {
     btn.disabled = false;
     btn.textContent = originalLabel;
+    updatePhotoSetNextBtn();
   }
 });
 
