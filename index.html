@@ -151,6 +151,28 @@
   .options-panel { margin-top: 4px; }
   #playAnimBtn { background: var(--route); }
   #exportBtn { background: #1b1f23; font-size: 1.05rem; padding: 16px; }
+  .combo-control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .combo-control input[type="text"] {
+    width: 68px;
+    flex-shrink: 0;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    text-align: center;
+  }
+  .combo-control input[type="range"] { flex: 1; }
+  .color-current-btn {
+    width: 100%;
+    height: 44px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -174,7 +196,7 @@
     <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
   </div>
 
-  <button class="options-toggle" data-target="opts2">⚙ Opcje (zdjęcia, ikona, kolor) ▾</button>
+  <button class="options-toggle" data-target="opts2">⚙ Opcje (zdjęcia, ikona, kolor, format) ▾</button>
   <div id="opts2" class="options-panel" style="display:none">
     <div id="photosCard" class="card">
       <h2>Zdjęcia na przystankach (opcjonalnie)</h2>
@@ -186,7 +208,18 @@
     </div>
     <div class="card">
       <h2>Kolor trasy</h2>
-      <div id="colorPicker" class="color-picker"></div>
+      <button type="button" id="colorSwatchToggle" class="color-current-btn"></button>
+      <div id="colorPicker" class="color-picker" style="display:none; margin-top:8px;"></div>
+    </div>
+    <div class="card">
+      <h2>Proporcje wideo</h2>
+      <select id="ratioSelect" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+        <option value="9:16" selected>9:16 — Stories / Reels / TikTok</option>
+        <option value="1:1">1:1 — kwadrat</option>
+        <option value="2:3">2:3 — portret</option>
+        <option value="3:4">3:4 — portret</option>
+        <option value="19.5:9">Pełny ekran telefonu (19,5:9)</option>
+      </select>
     </div>
   </div>
 
@@ -204,23 +237,38 @@
   <div id="opts3" class="options-panel" style="display:none">
     <div class="card">
       <h2>Prędkość posuwania znacznika</h2>
-      <input type="text" inputmode="decimal" id="speedInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+      <div class="combo-control">
+        <input type="text" inputmode="decimal" id="speedInput" value="1">
+        <input type="range" id="speedSlider" min="2" max="50" step="1" value="10">
+      </div>
     </div>
     <div class="card">
-      <h2>Nerwowość ruchu</h2>
-      <select id="wobbleSelect" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;"></select>
+      <h2>Nerwowość ruchu (0-10)</h2>
+      <div class="combo-control">
+        <input type="text" inputmode="decimal" id="wobbleInput" value="0">
+        <input type="range" id="wobbleSlider" min="0" max="10" step="1" value="0">
+      </div>
     </div>
     <div class="card">
       <h2>Rozmiar ikony</h2>
-      <input type="range" id="sizeSlider" min="2" max="8" value="4" style="width:100%">
+      <div class="combo-control">
+        <input type="text" inputmode="decimal" id="sizeInput" value="0.4">
+        <input type="range" id="sizeSlider" min="2" max="8" step="1" value="4">
+      </div>
     </div>
     <div class="card">
       <h2>Czas powiększania zdjęcia (s)</h2>
-      <input type="text" inputmode="decimal" id="growInput" value="1.5" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+      <div class="combo-control">
+        <input type="text" inputmode="decimal" id="growInput" value="1.5">
+        <input type="range" id="growSlider" min="2" max="50" step="1" value="15">
+      </div>
     </div>
     <div class="card">
       <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s)</h2>
-      <input type="text" inputmode="decimal" id="holdInput" value="1" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+      <div class="combo-control">
+        <input type="text" inputmode="decimal" id="holdInput" value="1">
+        <input type="range" id="holdSlider" min="2" max="50" step="1" value="10">
+      </div>
     </div>
   </div>
 
@@ -633,6 +681,7 @@ function buildIconPickerUI() {
       document.querySelectorAll(".icon-choice").forEach((el) => el.classList.remove("active"));
       btn.classList.add("active");
       updateMotoIconLayer();
+      saveSettings();
     });
     container.appendChild(btn);
   });
@@ -693,11 +742,11 @@ function syncWaypointSource() {
 // osobno na canvasie — dwa niezależne układy współrzędnych do zgrania piksel
 // w piksel to źródło notorycznych drobnych niedopasowań ("białe rąbki"). Teraz
 // jest tylko jeden system, więc nie ma czego rozjeżdżać.
-function drawWaypointMarkers() {
+function drawWaypointMarkers(showNumbers = false) {
   const rect = map.getContainer().getBoundingClientRect();
   const scale = STAGE_W / rect.width;
   const r = 12 * scale;
-  waypointFeatures.forEach((w) => {
+  waypointFeatures.forEach((w, i) => {
     if (!w.revealed) return;
     const [x, y] = projectToStage(w.lng, w.lat);
     stageCtx.save();
@@ -716,6 +765,15 @@ function drawWaypointMarkers() {
     stageCtx.beginPath();
     stageCtx.arc(x, y, r, 0, Math.PI * 2);
     stageCtx.stroke();
+
+    // numery TYLKO na statycznym podglądzie (do dopasowania zdjęć), nigdy w animacji/eksporcie
+    if (showNumbers && !w.settled) {
+      stageCtx.fillStyle = "#1b1f23";
+      stageCtx.font = `700 ${Math.round(r * 1.15)}px -apple-system, Roboto, sans-serif`;
+      stageCtx.textAlign = "center";
+      stageCtx.textBaseline = "middle";
+      stageCtx.fillText(String(i + 1), x, y + r * 0.05);
+    }
   });
 }
 
@@ -844,7 +902,7 @@ function showStaticPreviewOnStage() {
   ensureStageCanvas();
   const paint = () => {
     compositeMapToStage();
-    drawWaypointMarkers();
+    drawWaypointMarkers(true); // numery widoczne tylko tutaj, do dopasowania zdjęć
   };
   map.once("render", paint); // po przerysowaniu wywołanym przez fitBounds
   paint(); // i od razu, na wypadek gdyby mapa już była gotowa
@@ -874,7 +932,7 @@ function setLayerVisible(layerId, visible) {
 }
 
 /* ---------- Stage canvas: stała rozdzielczość 1080x1920, to on jest nagrywany ---------- */
-const STAGE_W = 1080, STAGE_H = 1920;
+let STAGE_W = 1080, STAGE_H = 1920;
 let stageCanvas = null, stageCtx = null, frozenCanvas = null, frozenCtx = null;
 
 function ensureStageCanvas() {
@@ -1363,26 +1421,81 @@ function parseDecimalInput(str, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-document.getElementById("speedInput").addEventListener("input", (e) => {
-  speedMultiplier = parseDecimalInput(e.target.value, 1);
-  selectedDuration = BASE_DURATION_SECONDS / speedMultiplier;
+function formatNum(v) {
+  return (Math.round(v * 100) / 100).toString();
+}
+
+// łączy pole tekstowe z suwakiem - edycja w jednym aktualizuje drugie,
+// oba wywołują ten sam onChange
+function wireCombo(textId, sliderId, { toValue, toSlider, fallback, onChange }) {
+  const textEl = document.getElementById(textId);
+  const sliderEl = document.getElementById(sliderId);
+
+  textEl.addEventListener("input", () => {
+    const v = parseDecimalInput(textEl.value, fallback);
+    sliderEl.value = toSlider(v);
+    onChange(v);
+    saveSettings();
+  });
+  sliderEl.addEventListener("input", () => {
+    const v = toValue(parseInt(sliderEl.value, 10));
+    textEl.value = formatNum(v);
+    onChange(v);
+    saveSettings();
+  });
+
+  return function setValue(v) {
+    textEl.value = formatNum(v);
+    sliderEl.value = toSlider(v);
+    onChange(v);
+  };
+}
+
+const setSpeed = wireCombo("speedInput", "speedSlider", {
+  toValue: (raw) => raw / 10,
+  toSlider: (v) => Math.round(v * 10),
+  fallback: 1,
+  onChange: (v) => {
+    speedMultiplier = v;
+    selectedDuration = BASE_DURATION_SECONDS / v;
+  },
 });
 
-document.getElementById("holdInput").addEventListener("input", (e) => {
-  REVEAL_HOLD_MS = parseDecimalInput(e.target.value, 1) * 1000;
+const setWobble = wireCombo("wobbleInput", "wobbleSlider", {
+  toValue: (raw) => raw,
+  toSlider: (v) => Math.round(v),
+  fallback: 0,
+  onChange: (v) => {
+    wobbleAmplitude = v * 0.6; // 0-10 -> 0-6°, 0 = całkowicie wyłączone
+  },
 });
 
-document.getElementById("growInput").addEventListener("input", (e) => {
-  REVEAL_GROW_MS = parseDecimalInput(e.target.value, 1.5) * 1000;
+const setIconSize = wireCombo("sizeInput", "sizeSlider", {
+  toValue: (raw) => raw / 10,
+  toSlider: (v) => Math.round(v * 10),
+  fallback: 0.4,
+  onChange: (v) => {
+    iconScale = v;
+    updateMotoIconLayer();
+  },
 });
 
-document.getElementById("wobbleSelect").addEventListener("change", (e) => {
-  wobbleAmplitude = parseInt(e.target.value, 10) * 0.6; // 0-10 -> 0-6°, 0 = całkowicie wyłączone
+const setGrow = wireCombo("growInput", "growSlider", {
+  toValue: (raw) => raw / 10,
+  toSlider: (v) => Math.round(v * 10),
+  fallback: 1.5,
+  onChange: (v) => {
+    REVEAL_GROW_MS = v * 1000;
+  },
 });
 
-document.getElementById("sizeSlider").addEventListener("input", (e) => {
-  iconScale = parseInt(e.target.value, 10) / 10; // 2-8 -> 0.2-0.8
-  updateMotoIconLayer();
+const setHold = wireCombo("holdInput", "holdSlider", {
+  toValue: (raw) => raw / 10,
+  toSlider: (v) => Math.round(v * 10),
+  fallback: 1,
+  onChange: (v) => {
+    REVEAL_HOLD_MS = v * 1000;
+  },
 });
 
 async function playAnimation() {
@@ -1459,18 +1572,6 @@ document.querySelectorAll(".options-toggle").forEach((btn) => {
   });
 });
 
-function buildWobbleSelectUI() {
-  const select = document.getElementById("wobbleSelect");
-  select.innerHTML = "";
-  for (let i = 0; i <= 10; i++) {
-    const opt = document.createElement("option");
-    opt.value = i;
-    opt.textContent = i === 0 ? "0 (wyłączone)" : i;
-    if (i === 0) opt.selected = true;
-    select.appendChild(opt);
-  }
-}
-
 // 64 kolory: 8 odcieni x 8 poziomów jasności
 const COLOR_PALETTE = (() => {
   const hues = [0, 25, 45, 90, 160, 200, 260, 320];
@@ -1483,27 +1584,136 @@ const COLOR_PALETTE = (() => {
 })();
 routeColor = COLOR_PALETTE[3 * 8 + 1]; // pomarańczowawy, zbliżony do dotychczasowego domyślnego
 
+function applyRouteColor(color) {
+  routeColor = color;
+  document.querySelectorAll(".color-swatch").forEach((el) => el.classList.toggle("active", el.dataset.color === color));
+  const toggle = document.getElementById("colorSwatchToggle");
+  if (toggle) toggle.style.background = color;
+  if (map?.getLayer("route-line")) map.setPaintProperty("route-line", "line-color", color);
+  if (map?.getLayer("trail-line")) map.setPaintProperty("trail-line", "line-color", color);
+}
+
 function buildColorPickerUI() {
   const container = document.getElementById("colorPicker");
   container.innerHTML = "";
   COLOR_PALETTE.forEach((color) => {
     const btn = document.createElement("button");
     btn.className = "color-swatch" + (color === routeColor ? " active" : "");
+    btn.dataset.color = color;
     btn.style.background = color;
     btn.addEventListener("click", () => {
-      routeColor = color;
-      document.querySelectorAll(".color-swatch").forEach((el) => el.classList.remove("active"));
-      btn.classList.add("active");
-      if (map?.getLayer("route-line")) map.setPaintProperty("route-line", "line-color", color);
-      if (map?.getLayer("trail-line")) map.setPaintProperty("trail-line", "line-color", color);
+      applyRouteColor(color);
+      saveSettings();
     });
     container.appendChild(btn);
   });
+  document.getElementById("colorSwatchToggle").style.background = routeColor;
 }
 
+document.getElementById("colorSwatchToggle").addEventListener("click", () => {
+  const picker = document.getElementById("colorPicker");
+  picker.style.display = picker.style.display === "none" ? "grid" : "none";
+});
+
+/* ---------- Proporcje wideo ---------- */
+const ASPECT_RATIOS = {
+  "9:16": { w: 1080, h: 1920 },
+  "1:1": { w: 1080, h: 1080 },
+  "2:3": { w: 1080, h: 1620 },
+  "3:4": { w: 1080, h: 1440 },
+  "19.5:9": { w: 1080, h: 2340 },
+};
+let currentRatioKey = "9:16";
+
+function applyAspectRatio(key) {
+  if (!ASPECT_RATIOS[key]) return;
+  currentRatioKey = key;
+  const { w, h } = ASPECT_RATIOS[key];
+  STAGE_W = w;
+  STAGE_H = h;
+  document.getElementById("mapWrap").style.aspectRatio = `${w} / ${h}`;
+  if (stageCanvas) {
+    stageCanvas.width = w;
+    stageCanvas.height = h;
+  }
+  if (frozenCanvas) {
+    frozenCanvas.width = w;
+    frozenCanvas.height = h;
+  }
+  if (map) {
+    map.resize();
+    if (lastRouteCoordinates) {
+      fitToRoute(lastRouteCoordinates);
+      showStaticPreviewOnStage();
+    }
+  }
+}
+
+document.getElementById("ratioSelect").addEventListener("change", (e) => {
+  applyAspectRatio(e.target.value);
+  saveSettings();
+});
+
+/* ---------- Zapamiętywanie ustawień (localStorage) ---------- */
+const SETTINGS_KEY = "routeVisualiserSettings_v1";
+
+function saveSettings() {
+  try {
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({
+        routeColor,
+        selectedIconKey,
+        iconScale,
+        speedMultiplier,
+        wobbleValue: parseInt(document.getElementById("wobbleSlider").value, 10),
+        growSeconds: REVEAL_GROW_MS / 1000,
+        holdSeconds: REVEAL_HOLD_MS / 1000,
+        ratioKey: currentRatioKey,
+      })
+    );
+  } catch {
+    // localStorage może być niedostępny (np. tryb prywatny) - po prostu nie zapisujemy
+  }
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyLoadedSettings() {
+  const s = loadSettings();
+  if (!s) return s;
+  if (s.routeColor) routeColor = s.routeColor;
+  if (s.selectedIconKey && ICON_LIBRARY[s.selectedIconKey]) selectedIconKey = s.selectedIconKey;
+  return s;
+}
+
+function applyLoadedSettingsPostBuild(s) {
+  if (!s) return;
+  if (typeof s.iconScale === "number") setIconSize(s.iconScale);
+  if (typeof s.speedMultiplier === "number") setSpeed(s.speedMultiplier);
+  if (typeof s.wobbleValue === "number") setWobble(s.wobbleValue);
+  if (typeof s.growSeconds === "number") setGrow(s.growSeconds);
+  if (typeof s.holdSeconds === "number") setHold(s.holdSeconds);
+  if (s.ratioKey && ASPECT_RATIOS[s.ratioKey]) {
+    currentRatioKey = s.ratioKey;
+    document.getElementById("ratioSelect").value = s.ratioKey;
+    applyAspectRatio(s.ratioKey);
+  }
+}
+
+// kolejność ważna: najpierw surowe wartości (ikona/kolor) PRZED zbudowaniem
+// pickerów, żeby renderowały się od razu z poprawnym zaznaczeniem
+const _loadedSettings = applyLoadedSettings();
 buildIconPickerUI();
-buildWobbleSelectUI();
 buildColorPickerUI();
+applyLoadedSettingsPostBuild(_loadedSettings);
 </script>
 </body>
 
