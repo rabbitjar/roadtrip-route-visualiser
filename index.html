@@ -224,6 +224,7 @@
   .ps-replace-btn, .ps-remove-btn {
     margin-top: 0; width: 32px; height: 32px; padding: 0;
     background: #fff; border: 1px solid var(--line); border-radius: 6px; font-size: 0.95rem;
+    display: flex; align-items: center; justify-content: center;
   }
   .ps-remove-btn { color: #b3261e; }
 </style>
@@ -1473,7 +1474,7 @@ async function processPhotoFile(file) {
   } catch {
     exif = null;
   }
-  const hasGps = exif && typeof exif.latitude === "number" && typeof exif.longitude === "number";
+  const hasGps = exif && Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude);
   // DateTimeOriginal bywa nieobecne (np. zdjęcie edytowane) - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
   const timestamp = exif?.DateTimeOriginal instanceof Date ? exif.DateTimeOriginal.getTime() : file.lastModified;
   return {
@@ -1517,7 +1518,12 @@ function renderPhotoSetList() {
         ${statusHtml}
       </div>
       <div class="photoset-actions">
-        <button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień zdjęcie">⟳</button>
+        <button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień zdjęcie">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1b1f23" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
+            <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
+          </svg>
+        </button>
         <button type="button" class="ps-remove-btn" data-id="${entry.id}" title="Usuń">✕</button>
       </div>
     `;
