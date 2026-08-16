@@ -212,14 +212,14 @@
   .photoset-status { font-size: 0.8rem; margin-top: 2px; }
   .photoset-status.ok { color: #2d6a4f; }
   .photoset-status.warn { color: #b3261e; }
-  .manual-coords-row { display: flex; gap: 6px; margin-top: 6px; }
+  .manual-coords-row { display: flex; gap: 6px; margin-top: 8px; }
   .manual-coords-input {
-    flex: 1; min-width: 0; padding: 6px 8px; font-size: 0.82rem;
-    border: 1px solid var(--line); border-radius: 6px;
+    flex: 1; min-width: 0; padding: 12px 10px; font-size: 1rem;
+    border: 1px solid var(--line); border-radius: 8px;
   }
   .manual-coords-btn {
-    margin-top: 0; padding: 6px 10px; font-size: 0.8rem;
-    background: var(--ink); color: #fff; border: none; border-radius: 6px;
+    width: auto; flex-shrink: 0; margin-top: 0; padding: 10px 16px; font-size: 0.9rem;
+    background: var(--ink); color: #fff; border: none; border-radius: 8px;
   }
   .photoset-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
   .ps-replace-btn, .ps-remove-btn {
@@ -237,7 +237,7 @@
 
   <div class="source-tabs">
     <button type="button" class="tab-btn active" data-tab="link">Link Google Maps</button>
-    <button type="button" class="tab-btn" data-tab="photos">Zdjęcia z telefonu</button>
+    <button type="button" class="tab-btn" data-tab="photos">Zdjęcia/filmy z telefonu</button>
   </div>
 
   <div id="sourceLink" class="source-panel">
@@ -247,12 +247,12 @@
   </div>
 
   <div id="sourcePhotos" class="source-panel" style="display:none">
-    <p class="sub">Wgraj do 20 zdjęć z telefonu z lokalizacją GPS w danych EXIF. Trasa powstanie z tych lokalizacji, w kolejności chronologicznej wg czasu zrobienia zdjęcia — bez linku Google Maps.</p>
-    <input type="file" accept="image/*" multiple id="photoSetInput" style="display:none">
-    <input type="file" accept="image/*" id="photoSetReplaceInput" style="display:none">
-    <button type="button" id="photoSetAddBtn" class="secondary-btn">+ Wybierz zdjęcia</button>
+    <p class="sub">Wgraj do 20 zdjęć/filmów z telefonu. Zdjęcia z lokalizacją GPS w EXIF ustawiają punkt automatycznie; przy filmach (i zdjęciach bez GPS) wpisz lokalizację ręcznie. Trasa powstanie z tych lokalizacji, w kolejności chronologicznej — bez linku Google Maps.</p>
+    <input type="file" accept="image/*,video/*" multiple id="photoSetInput" style="display:none">
+    <input type="file" accept="image/*,video/*" id="photoSetReplaceInput" style="display:none">
+    <button type="button" id="photoSetAddBtn" class="secondary-btn">+ Wybierz zdjęcia/filmy</button>
     <div id="photoSetList"></div>
-    <button id="step1PhotosNextBtn" disabled>Dalej: Zbuduj trasę ze zdjęć →</button>
+    <button id="step1PhotosNextBtn" disabled>Dalej: Zbuduj trasę →</button>
   </div>
 </div>
 
@@ -271,7 +271,7 @@
   <button class="options-toggle" data-target="opts2">⚙ Opcje (zdjęcia, ikona, kolor, format) ▾</button>
   <div id="opts2" class="options-panel" style="display:none">
     <div id="photosCard" class="card">
-      <h2>Zdjęcia na przystankach (opcjonalnie)</h2>
+      <h2>Zdjęcia/filmy na przystankach (opcjonalnie)</h2>
       <div id="photosList"></div>
     </div>
     <div class="card">
@@ -1564,7 +1564,7 @@ function parseLatLngPaste(str) {
 }
 
 async function processPhotoFile(file) {
-  const { img, url } = await loadImageFromFile(file);
+  const { type, mediaEl, url } = await loadMediaFromFile(file);
   let exif = null;
   try {
     exif = await exifr.parse(file);
@@ -1572,12 +1572,14 @@ async function processPhotoFile(file) {
     exif = null;
   }
   const hasGps = exif && Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude);
-  // DateTimeOriginal bywa nieobecne (np. zdjęcie edytowane) - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
+  // DateTimeOriginal bywa nieobecne (filmy prawie zawsze, edytowane zdjęcia czasem)
+  // - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
   const timestamp = exif?.DateTimeOriginal instanceof Date ? exif.DateTimeOriginal.getTime() : file.lastModified;
   return {
     id: `p${photoSetIdCounter++}`,
     name: file.name,
-    img,
+    type,
+    mediaEl,
     url,
     timestamp,
     lat: hasGps ? exif.latitude : null,
@@ -1602,20 +1604,24 @@ function renderPhotoSetList() {
     const statusHtml =
       entry.status === "ok"
         ? `<div class="photoset-status ok">✓ ${entry.lat.toFixed(4)}, ${entry.lng.toFixed(4)}</div>`
-        : `<div class="photoset-status warn">⚠ brak lokalizacji GPS w zdjęciu</div>
+        : `<div class="photoset-status warn">⚠ brak lokalizacji (${entry.type === "video" ? "filmy nie mają GPS" : "brak GPS w zdjęciu"})</div>
            <div class="manual-coords-row">
              <input type="text" placeholder="52.2297, 21.0122 (wklej z Google Maps)" class="manual-coords-input" data-id="${entry.id}">
              <button type="button" class="manual-coords-btn" data-id="${entry.id}">Ustaw</button>
            </div>`;
+    const thumbTag =
+      entry.type === "video"
+        ? `<video class="thumb" src="${entry.url}" muted playsinline></video>`
+        : `<img class="thumb" src="${entry.url}">`;
     row.innerHTML = `
       <span class="num">${i + 1}.</span>
-      <img class="thumb" src="${entry.url}">
+      ${thumbTag}
       <div class="photoset-info">
         <div class="photoset-name">${entry.name}</div>
         ${statusHtml}
       </div>
       <div class="photoset-actions">
-        <button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień zdjęcie">
+        <button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień">
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1b1f23" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
             <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
@@ -1675,7 +1681,7 @@ document.getElementById("photoSetInput").addEventListener("change", async (e) =>
 
   const remaining = MAX_PHOTO_SET - photoSetEntries.length;
   if (files.length > remaining) {
-    showError(`Możesz dodać jeszcze maksymalnie ${remaining} zdjęć (limit ${MAX_PHOTO_SET} łącznie).`);
+    showError(`Możesz dodać jeszcze maksymalnie ${remaining} plików (limit ${MAX_PHOTO_SET} łącznie).`);
     return;
   }
   for (const file of files) {
@@ -1710,7 +1716,7 @@ document.getElementById("step1PhotosNextBtn").addEventListener("click", async ()
     const waypoints = sorted.map((e, i) => ({ name: `Zdjęcie ${i + 1}`, lat: e.lat, lng: e.lng }));
     lastWaypoints = waypoints;
     // zdjęcia są już "dołączone" - to one były źródłem trasy
-    waypointPhotos = sorted.map((e) => ({ img: e.img, url: e.url }));
+    waypointPhotos = sorted.map((e) => ({ type: e.type, mediaEl: e.mediaEl, url: e.url }));
 
     btn.textContent = "Liczę trasę…";
     const { coordinates, distanceMeters, durationSeconds } = await fetchRoadRoute(waypoints);
