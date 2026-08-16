@@ -834,18 +834,66 @@ function syncWaypointSource() {
   // wspólne źródło pozycji zamiast dwóch niezależnych systemów.
 }
 
-// Rysuje WSZYSTKIE odsłonięte znaczniki przystanków — zwykłe kropki i miniaturki
-// zdjęć — jedną funkcją, jednym przeliczeniem współrzędnych (projectToStage).
-// Wcześniej zwykłe kropki żyły w natywnej warstwie MapLibre (WebGL), a miniaturki
-// osobno na canvasie — dwa niezależne układy współrzędnych do zgrania piksel
-// w piksel to źródło notorycznych drobnych niedopasowań ("białe rąbki"). Teraz
-// jest tylko jeden system, więc nie ma czego rozjeżdżać.
+// buduje małą flagę (start = zielona, meta = szachownica) jako gotowy canvas,
+// w tym samym stylu co reszta znaczników (białe kółko, ciemna kreska)
+function buildStartFinishIcon(kind, sizePx) {
+  const c = document.createElement("canvas");
+  c.width = sizePx;
+  c.height = sizePx;
+  const ctx = c.getContext("2d");
+  const s = sizePx / 24;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, sizePx, sizePx);
+
+  ctx.strokeStyle = "#1b1f23";
+  ctx.lineWidth = 1.6 * s;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(7 * s, 4 * s);
+  ctx.lineTo(7 * s, 20 * s);
+  ctx.stroke();
+
+  const fx = 7 * s, fy = 4 * s, fw = 11 * s, fh = 7 * s;
+  if (kind === "finish") {
+    const cols = 3, rows = 2;
+    const cw = fw / cols, ch = fh / rows;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        ctx.fillStyle = (row + col) % 2 === 0 ? "#1b1f23" : "#ffffff";
+        ctx.fillRect(fx + col * cw, fy + row * ch, cw, ch);
+      }
+    }
+  } else {
+    ctx.fillStyle = "#2d6a4f";
+    ctx.fillRect(fx, fy, fw, fh);
+  }
+  ctx.strokeStyle = "#1b1f23";
+  ctx.lineWidth = 1 * s;
+  ctx.strokeRect(fx, fy, fw, fh);
+
+  return c;
+}
+let startIcon = null, finishIcon = null;
+
+// Rysuje WSZYSTKIE odsłonięte znaczniki przystanków — zwykłe kropki, flagi
+// start/meta i miniaturki zdjęć — jedną funkcją, jednym przeliczeniem
+// współrzędnych (projectToStage). Wcześniej zwykłe kropki żyły w natywnej
+// warstwie MapLibre (WebGL), a miniaturki osobno na canvasie — dwa niezależne
+// układy współrzędnych do zgrania piksel w piksel to źródło notorycznych
+// drobnych niedopasowań ("białe rąbki"). Teraz jest tylko jeden system.
 function drawWaypointMarkers(showNumbers = false) {
   const rect = map.getContainer().getBoundingClientRect();
   const scale = STAGE_W / rect.width;
   const r = 12 * scale;
+  const thumbSize = Math.round(r * 2);
+  if (!startIcon) startIcon = buildStartFinishIcon("start", thumbSize);
+  if (!finishIcon) finishIcon = buildStartFinishIcon("finish", thumbSize);
+
   waypointFeatures.forEach((w, i) => {
     if (!w.revealed) return;
+    const isStart = i === 0;
+    const isFinish = i === waypointFeatures.length - 1;
     const [x, y] = projectToStage(w.lng, w.lat);
     stageCtx.save();
     stageCtx.beginPath();
@@ -853,6 +901,10 @@ function drawWaypointMarkers(showNumbers = false) {
     stageCtx.clip();
     if (w.settled && w.thumbnailCanvas) {
       stageCtx.drawImage(w.thumbnailCanvas, x - r, y - r, r * 2, r * 2);
+    } else if (isStart) {
+      stageCtx.drawImage(startIcon, x - r, y - r, r * 2, r * 2);
+    } else if (isFinish) {
+      stageCtx.drawImage(finishIcon, x - r, y - r, r * 2, r * 2);
     } else {
       stageCtx.fillStyle = "#ffffff";
       stageCtx.fillRect(x - r, y - r, r * 2, r * 2);
@@ -865,7 +917,7 @@ function drawWaypointMarkers(showNumbers = false) {
     stageCtx.stroke();
 
     // numery TYLKO na statycznym podglądzie (do dopasowania zdjęć), nigdy w animacji/eksporcie
-    if (showNumbers && !w.settled) {
+    if (showNumbers && !w.settled && !isStart && !isFinish) {
       stageCtx.fillStyle = "#1b1f23";
       stageCtx.font = `700 ${Math.round(r * 1.15)}px -apple-system, Roboto, sans-serif`;
       stageCtx.textAlign = "center";
