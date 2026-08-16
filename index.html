@@ -221,6 +221,13 @@
     width: auto; flex-shrink: 0; margin-top: 0; padding: 10px 16px; font-size: 0.9rem;
     background: var(--ink); color: #fff; border: none; border-radius: 8px;
   }
+  .manual-coords-error { font-size: 0.78rem; color: #b3261e; margin-top: 4px; }
+  .drag-handle {
+    flex-shrink: 0; width: 20px; display: flex; align-items: center; justify-content: center;
+    touch-action: none; cursor: grab; align-self: stretch;
+  }
+  .photoset-row { position: relative; background: var(--paper); }
+  .photoset-row.dragging { z-index: 20; box-shadow: 0 4px 14px rgba(0,0,0,0.18); border-radius: 8px; }
   .photoset-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
   .ps-replace-btn, .ps-remove-btn {
     margin-top: 0; width: 32px; height: 32px; padding: 0;
@@ -1551,16 +1558,55 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 const MAX_PHOTO_SET = 20;
 let photoSetEntries = []; // { id, name, lat, lng, timestamp, img, url, status: 'ok'|'no-gps' }
 let photoSetIdCounter = 0;
+let manualOrderApplied = false; // po ręcznym przeciągnięciu przestajemy sortować po czasie
+
+function getOrderedPhotoSetEntries() {
+  return manualOrderApplied
+    ? photoSetEntries
+    : [...photoSetEntries].sort((a, b) => a.timestamp - b.timestamp);
+}
 let replacingEntryId = null;
 
-// format "52.2297, 21.0122" — dokładnie to, co Google Maps kopiuje do schowka
-// po długim przytrzymaniu punktu na mapie
+function isValidLatLng(lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+// Odporne rozpoznawanie lokalizacji wklejonej z różnych źródeł:
+// 1) link Google Maps do miejsca (.../@lat,lng,zoom/...)
+// 2) link Google Maps do trasy (oba znane formaty !8m2!3d..!4d.. i !1d..!2d..)
+// 3) zwykła para współrzędnych — obsługuje ZARÓWNO kropkę, jak i przecinek jako
+//    separator dziesiętny (telefon użytkownika w polskiej lokalizacji zapisuje
+//    to jako "52,2287693, 21,0176869" — cztery liczby rozdzielone przecinkami,
+//    nie dwie, więc proste split(",") tu zawodzi). Wyszukujemy każdą liczbę jako
+//    samodzielny token wzorcem, nie dzielimy całego stringa po przecinku.
 function parseLatLngPaste(str) {
-  const parts = String(str).split(",").map((s) => parseFloat(s.trim()));
-  if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) return null;
-  const [lat, lng] = parts;
-  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
-  return { lat, lng };
+  const s = String(str).trim();
+
+  const atMatch = s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (atMatch) {
+    const lat = parseFloat(atMatch[1]), lng = parseFloat(atMatch[2]);
+    if (isValidLatLng(lat, lng)) return { lat, lng };
+  }
+
+  const m8 = s.match(/!8m2!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  if (m8) {
+    const lat = parseFloat(m8[1]), lng = parseFloat(m8[2]);
+    if (isValidLatLng(lat, lng)) return { lat, lng };
+  }
+  const m1 = s.match(/!1d(-?\d+\.\d+)!2d(-?\d+\.\d+)/);
+  if (m1) {
+    const lng = parseFloat(m1[1]), lat = parseFloat(m1[2]);
+    if (isValidLatLng(lat, lng)) return { lat, lng };
+  }
+
+  const numMatches = s.match(/-?\d+[.,]\d+/g);
+  if (numMatches && numMatches.length === 2) {
+    const lat = parseFloat(numMatches[0].replace(",", "."));
+    const lng = parseFloat(numMatches[1].replace(",", "."));
+    if (isValidLatLng(lat, lng)) return { lat, lng };
+  }
+
+  return null;
 }
 
 async function processPhotoFile(file) {
@@ -1593,10 +1639,75 @@ function updatePhotoSetNextBtn() {
   document.getElementById("step1PhotosNextBtn").disabled = !allOk;
 }
 
+let dragCtx = null; // { entryId, pointerId, startY, row }
+
+function setupDragHandles(container) {
+  container.querySelectorAll(".drag-handle").forEach((handle) => {
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const row = handle.closest(".photoset-row");
+      dragCtx = { entryId: handle.dataset.id, pointerId: e.pointerId, startY: e.clientY, row };
+      row.classList.add("dragging");
+      handle.setPointerCapture(e.pointerId);
+    });
+
+    handle.addEventListener("pointermove", (e) => {
+      if (!dragCtx || e.pointerId !== dragCtx.pointerId) return;
+      const dy = e.clientY - dragCtx.startY;
+      dragCtx.row.style.transform = `translateY(${dy}px)`;
+    });
+
+    handle.addEventListener("pointerup", (e) => {
+      if (!dragCtx || e.pointerId !== dragCtx.pointerId) return;
+      finishDrag(e.clientY);
+    });
+
+    handle.addEventListener("pointercancel", () => {
+      if (!dragCtx) return;
+      dragCtx.row.style.transform = "";
+      dragCtx.row.classList.remove("dragging");
+      dragCtx = null;
+    });
+  });
+}
+
+// Prosty, odporny model: podczas przeciągania rusza się TYLKO chwytany wiersz
+// (wizualna informacja zwrotna), reszta listy nie przeskakuje na żywo — dopiero
+// po puszczeniu palca/myszy liczymy docelową pozycję i przebudowujemy listę.
+// Mniej "płynne" niż live-reflow, ale dużo mniej podatne na błędy bez możliwości
+// przetestowania na żywym urządzeniu.
+function finishDrag(dropClientY) {
+  const { entryId, row } = dragCtx;
+  const container = document.getElementById("photoSetList");
+  const otherRows = Array.from(container.querySelectorAll(".photoset-row")).filter((r) => r !== row);
+
+  const ordered = getOrderedPhotoSetEntries();
+  let targetIndex = ordered.length - 1; // domyślnie: na koniec
+  for (let i = 0; i < otherRows.length; i++) {
+    const rect = otherRows[i].getBoundingClientRect();
+    if (dropClientY < rect.top + rect.height / 2) {
+      targetIndex = i;
+      break;
+    }
+  }
+
+  const fromIndex = ordered.findIndex((e) => e.id === entryId);
+  if (fromIndex !== -1) {
+    const newOrder = [...ordered];
+    const [moved] = newOrder.splice(fromIndex, 1);
+    newOrder.splice(targetIndex, 0, moved);
+    photoSetEntries = newOrder;
+    manualOrderApplied = true;
+  }
+
+  dragCtx = null;
+  renderPhotoSetList();
+}
+
 function renderPhotoSetList() {
   const container = document.getElementById("photoSetList");
   container.innerHTML = "";
-  const sorted = [...photoSetEntries].sort((a, b) => a.timestamp - b.timestamp);
+  const sorted = getOrderedPhotoSetEntries();
 
   sorted.forEach((entry, i) => {
     const row = document.createElement("div");
@@ -1606,14 +1717,22 @@ function renderPhotoSetList() {
         ? `<div class="photoset-status ok">✓ ${entry.lat.toFixed(4)}, ${entry.lng.toFixed(4)}</div>`
         : `<div class="photoset-status warn">⚠ brak lokalizacji (${entry.type === "video" ? "filmy nie mają GPS" : "brak GPS w zdjęciu"})</div>
            <div class="manual-coords-row">
-             <input type="text" placeholder="52.2297, 21.0122 (wklej z Google Maps)" class="manual-coords-input" data-id="${entry.id}">
+             <input type="text" placeholder="Wklej współrzędne z Google Maps tutaj" class="manual-coords-input" data-id="${entry.id}">
              <button type="button" class="manual-coords-btn" data-id="${entry.id}">Ustaw</button>
-           </div>`;
+           </div>
+           <div class="manual-coords-error" data-id="${entry.id}"></div>`;
     const thumbTag =
       entry.type === "video"
         ? `<video class="thumb" src="${entry.url}" muted playsinline></video>`
         : `<img class="thumb" src="${entry.url}">`;
     row.innerHTML = `
+      <span class="drag-handle" data-id="${entry.id}" title="Przeciągnij, żeby zmienić kolejność">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20" fill="#5b5f63">
+          <circle cx="4" cy="3" r="1.6"/><circle cx="12" cy="3" r="1.6"/>
+          <circle cx="4" cy="10" r="1.6"/><circle cx="12" cy="10" r="1.6"/>
+          <circle cx="4" cy="17" r="1.6"/><circle cx="12" cy="17" r="1.6"/>
+        </svg>
+      </span>
       <span class="num">${i + 1}.</span>
       ${thumbTag}
       <div class="photoset-info">
@@ -1630,8 +1749,11 @@ function renderPhotoSetList() {
         <button type="button" class="ps-remove-btn" data-id="${entry.id}" title="Usuń">✕</button>
       </div>
     `;
+    row.dataset.entryId = entry.id;
     container.appendChild(row);
   });
+
+  setupDragHandles(container);
 
   container.querySelectorAll(".ps-remove-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1646,22 +1768,36 @@ function renderPhotoSetList() {
       document.getElementById("photoSetReplaceInput").click();
     });
   });
+  function applyManualCoords(entryId) {
+    const input = container.querySelector(`.manual-coords-input[data-id="${entryId}"]`);
+    const errEl = container.querySelector(`.manual-coords-error[data-id="${entryId}"]`);
+    const parsed = parseLatLngPaste(input.value);
+    if (!parsed) {
+      input.style.borderColor = "#b3261e";
+      if (errEl) errEl.textContent = "Nie rozpoznałem formatu. Wklej współrzędne (np. z Google Maps) albo cały link.";
+      return;
+    }
+    const entry = photoSetEntries.find((e) => e.id === entryId);
+    if (entry) {
+      entry.lat = parsed.lat;
+      entry.lng = parsed.lng;
+      entry.status = "ok";
+      renderPhotoSetList();
+      updatePhotoSetNextBtn();
+    }
+  }
+
   container.querySelectorAll(".manual-coords-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const input = container.querySelector(`.manual-coords-input[data-id="${btn.dataset.id}"]`);
-      const parsed = parseLatLngPaste(input.value);
-      if (!parsed) {
-        input.style.borderColor = "#b3261e";
-        return;
-      }
-      const entry = photoSetEntries.find((e) => e.id === btn.dataset.id);
-      if (entry) {
-        entry.lat = parsed.lat;
-        entry.lng = parsed.lng;
-        entry.status = "ok";
-        renderPhotoSetList();
-        updatePhotoSetNextBtn();
-      }
+    btn.addEventListener("click", () => applyManualCoords(btn.dataset.id));
+  });
+  container.querySelectorAll(".manual-coords-input").forEach((input) => {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") applyManualCoords(input.dataset.id);
+    });
+    input.addEventListener("input", () => {
+      input.style.borderColor = "";
+      const errEl = container.querySelector(`.manual-coords-error[data-id="${input.dataset.id}"]`);
+      if (errEl) errEl.textContent = "";
     });
   });
 
@@ -1706,7 +1842,7 @@ document.getElementById("photoSetReplaceInput").addEventListener("change", async
 });
 
 document.getElementById("step1PhotosNextBtn").addEventListener("click", async () => {
-  const sorted = [...photoSetEntries].sort((a, b) => a.timestamp - b.timestamp);
+  const sorted = getOrderedPhotoSetEntries();
   if (sorted.length < 2) return;
   hideError();
   const btn = document.getElementById("step1PhotosNextBtn");
