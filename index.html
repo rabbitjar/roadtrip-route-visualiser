@@ -93,8 +93,9 @@
   .photo-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .photo-row .thumb {
     width: 36px; height: 36px; border-radius: 6px; object-fit: cover;
-    border: 1px solid var(--line); flex-shrink: 0; display: none;
+    border: 1px solid var(--line); flex-shrink: 0;
   }
+  .thumb-wrap { flex-shrink: 0; display: block; }
   .photo-row input[type="file"] { max-width: 90px; font-size: 0.75rem; }
   .color-picker {
     display: grid;
@@ -820,7 +821,8 @@ function rebuildWaypointMarkers(coordinates, cum, waypoints) {
     distanceAlong: distanceAlongForWaypoint(coordinates, cum, [w.lng, w.lat]),
     revealed: false,
     settled: false,
-    photoImage: waypointPhotos[i]?.img ?? null,
+    photoImage: waypointPhotos[i]?.mediaEl ?? waypointPhotos[i]?.img ?? null,
+    mediaType: waypointPhotos[i]?.type ?? "image",
   }));
   syncWaypointSource();
 }
@@ -1151,22 +1153,23 @@ function drawDistanceCounter(km) {
   stageCtx.restore();
 }
 
-function drawImageCover(ctx, img, cx, cy, boxW, boxH) {
-  const imgRatio = img.width / img.height;
+function drawImageCover(ctx, media, cx, cy, boxW, boxH) {
+  const { w: mw, h: mh } = getMediaSize(media);
+  const imgRatio = mw / mh;
   const boxRatio = boxW / boxH;
   let sw, sh, sx, sy;
   if (imgRatio > boxRatio) {
-    sh = img.height;
+    sh = mh;
     sw = sh * boxRatio;
-    sx = (img.width - sw) / 2;
+    sx = (mw - sw) / 2;
     sy = 0;
   } else {
-    sw = img.width;
+    sw = mw;
     sh = sw / boxRatio;
     sx = 0;
-    sy = (img.height - sh) / 2;
+    sy = (mh - sh) / 2;
   }
-  ctx.drawImage(img, sx, sy, sw, sh, cx - boxW / 2, cy - boxH / 2, boxW, boxH);
+  ctx.drawImage(media, sx, sy, sw, sh, cx - boxW / 2, cy - boxH / 2, boxW, boxH);
 }
 
 // choreografia zdjęcia: 1s powiększanie, 2s trzymanie, 0.4s znikanie (szybciej niż wejście)
@@ -1323,6 +1326,9 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         const revealElapsed = now - revealStartTime;
         drawPhotoRevealFrame(revealWaypoint, revealElapsed);
         if (revealElapsed >= revealTotalMs()) {
+          if (revealWaypoint.mediaType === "video" && revealWaypoint.photoImage) {
+            revealWaypoint.photoImage.pause();
+          }
           mode = "traveling";
           pausedAccumMs += revealTotalMs();
           settlePhotoBadge(revealWaypoint); // odtąd znacznik pokazuje miniaturkę tego zdjęcia
@@ -1371,6 +1377,12 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         mode = "reveal";
         revealStartTime = now;
         revealWaypoint = justReached;
+        // wideo gra tylko przez czas trwania reveal (grow+hold+shrink), nie cały klip —
+        // start dokładnie w momencie wejścia w tryb reveal
+        if (justReached.mediaType === "video" && justReached.photoImage) {
+          justReached.photoImage.currentTime = 0;
+          justReached.photoImage.play().catch(() => {}); // ignoruj rzadkie odrzucenie autoplay (mimo muted)
+        }
         requestAnimationFrame(frame);
         return;
       }
@@ -1491,6 +1503,39 @@ function loadImageFromFile(file) {
     img.onerror = reject;
     img.src = url;
   });
+}
+
+// jak loadImageFromFile, ale obsługuje też pliki wideo — zwraca element
+// <video> (wyciszony, playsInline, zapętlony) zamiast <img>, gotowy do
+// rysowania klatek na canvasie tym samym mechanizmem co zdjęcia
+function loadMediaFromFile(file) {
+  const url = URL.createObjectURL(file);
+  const isVideo = file.type.startsWith("video/");
+  if (!isVideo) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ type: "image", mediaEl: img, url });
+      img.onerror = reject;
+      img.src = url;
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.loop = true;
+    video.onloadeddata = () => resolve({ type: "video", mediaEl: video, url });
+    video.onerror = reject;
+    video.src = url;
+  });
+}
+
+function getMediaSize(el) {
+  return {
+    w: el.videoWidth || el.naturalWidth || el.width,
+    h: el.videoHeight || el.naturalHeight || el.height,
+  };
 }
 
 /* ---------- Alternatywne źródło trasy: zbiór zdjęć z EXIF GPS + czas ---------- */
@@ -1698,31 +1743,42 @@ function buildPhotosUI(waypoints) {
     row.innerHTML = `
       <span class="num">${i + 1}.</span>
       <span class="name">${w.name}</span>
-      <img class="thumb" id="thumb-${i}">
-      <input type="file" accept="image/*" id="photoInput-${i}">
+      <span class="thumb-wrap" id="thumbWrap-${i}"></span>
+      <input type="file" accept="image/*,video/*" id="photoInput-${i}">
     `;
     list.appendChild(row);
 
-    const thumb = row.querySelector(`#thumb-${i}`);
-    if (waypointPhotos[i]) {
-      thumb.src = waypointPhotos[i].url;
-      thumb.style.display = "block";
+    const thumbWrap = row.querySelector(`#thumbWrap-${i}`);
+    function renderThumb(entry) {
+      thumbWrap.innerHTML = "";
+      if (!entry) return;
+      const el = document.createElement(entry.type === "video" ? "video" : "img");
+      el.className = "thumb";
+      el.src = entry.url;
+      if (entry.type === "video") {
+        el.muted = true;
+        el.playsInline = true;
+      }
+      thumbWrap.appendChild(el);
     }
+    renderThumb(waypointPhotos[i]);
 
     row.querySelector(`#photoInput-${i}`).addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
-        const { img, url } = await loadImageFromFile(file);
-        waypointPhotos[i] = { img, url };
-        thumb.src = url;
-        thumb.style.display = "block";
+        const entry = await loadMediaFromFile(file);
+        waypointPhotos[i] = entry;
+        renderThumb(entry);
         // KLUCZOWE: waypointFeatures budują się od razu po pobraniu trasy (krok 1),
         // czyli zanim zdążysz dołączyć zdjęcia na ekranie 2 — bez tej synchronizacji
-        // dołączone zdjęcie nigdy nie trafiłoby do animacji.
-        if (waypointFeatures[i]) waypointFeatures[i].photoImage = img;
+        // dołączone zdjęcie/wideo nigdy nie trafiłoby do animacji.
+        if (waypointFeatures[i]) {
+          waypointFeatures[i].photoImage = entry.mediaEl;
+          waypointFeatures[i].mediaType = entry.type;
+        }
       } catch {
-        showError(`Nie udało się wczytać zdjęcia dla punktu "${w.name}".`);
+        showError(`Nie udało się wczytać pliku dla punktu "${w.name}".`);
       }
     });
   });
