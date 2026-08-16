@@ -246,7 +246,7 @@
   </div>
 
   <div id="sourcePhotos" class="source-panel" style="display:none">
-    <p class="sub">Wgraj do 15 zdjęć z telefonu z lokalizacją GPS w danych EXIF. Trasa powstanie z tych lokalizacji, w kolejności chronologicznej wg czasu zrobienia zdjęcia — bez linku Google Maps.</p>
+    <p class="sub">Wgraj do 20 zdjęć z telefonu z lokalizacją GPS w danych EXIF. Trasa powstanie z tych lokalizacji, w kolejności chronologicznej wg czasu zrobienia zdjęcia — bez linku Google Maps.</p>
     <input type="file" accept="image/*" multiple id="photoSetInput" style="display:none">
     <input type="file" accept="image/*" id="photoSetReplaceInput" style="display:none">
     <button type="button" id="photoSetAddBtn" class="secondary-btn">+ Wybierz zdjęcia</button>
@@ -1503,7 +1503,7 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   });
 });
 
-const MAX_PHOTO_SET = 15;
+const MAX_PHOTO_SET = 20;
 let photoSetEntries = []; // { id, name, lat, lng, timestamp, img, url, status: 'ok'|'no-gps' }
 let photoSetIdCounter = 0;
 let replacingEntryId = null;
