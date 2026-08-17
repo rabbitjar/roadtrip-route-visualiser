@@ -243,6 +243,11 @@
     display: flex; align-items: center; justify-content: center;
   }
   .ps-remove-btn { color: #b3261e; }
+  .maplibregl-ctrl-attrib {
+    font-size: 10px !important;
+    padding: 2px 6px !important;
+    line-height: 1.3 !important;
+  }
 </style>
 </head>
 <body>
@@ -1085,13 +1090,15 @@ function fitToRoute(coordinates) {
     (b, c) => b.extend(c),
     new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
   );
-  // dodatkowy padding od góry, proporcjonalny do zarezerwowanego obszaru licznika km
-  // (COUNTER_AREA_H liczony w skali stageCanvas 1080x1920, tu przeliczony na realny rozmiar mapy)
+  // dodatkowy padding od góry (licznik km) i od dołu (pole atrybucji OSM —
+  // wymagane licencją danych, nie da się go usunąć, ale trasa/znaczniki
+  // powinny go tak samo omijać jak licznika u góry)
   const rect = map.getContainer().getBoundingClientRect();
   const topPadding = 40 + (COUNTER_AREA_H / STAGE_H) * rect.height;
+  const bottomPadding = 40 + (ATTRIB_AREA_H / STAGE_H) * rect.height;
   // "Full route" tryb kamery: dopasuj kadr RAZ, przed animacją — bez zoomowania w trakcie jazdy
   map.fitBounds(bounds, {
-    padding: { top: topPadding, bottom: 40, left: 40, right: 40 },
+    padding: { top: topPadding, bottom: bottomPadding, left: 40, right: 40 },
     duration: 0,
   });
 }
@@ -1146,6 +1153,9 @@ let currentDistanceKm = 0;
 // zarezerwowany obszar w lewym górnym rogu pod licznik — używane też przez
 // fitToRoute (dodatkowy padding od góry), żeby trasa w niego nie wchodziła
 const COUNTER_AREA_H = 150;
+// pole atrybucji OSM na dole mapy potrafi się zawinąć do 2 linii na wąskim
+// ekranie telefonu i zająć sporo miejsca — rezerwujemy pod nie podobny margines
+const ATTRIB_AREA_H = 130;
 
 function drawDistanceCounter(km) {
   const text = `${km.toFixed(1)} km`;
@@ -2042,17 +2052,35 @@ function buildPhotosUI(waypoints) {
     list.appendChild(row);
 
     const thumbWrap = row.querySelector(`#thumbWrap-${i}`);
+    const isStart = i === 0;
+    const isFinish = i === waypoints.length - 1;
     function renderThumb(entry) {
       thumbWrap.innerHTML = "";
-      if (!entry) return;
-      const el = document.createElement(entry.type === "video" ? "video" : "img");
-      el.className = "thumb";
-      el.src = entry.url;
-      if (entry.type === "video") {
-        el.muted = true;
-        el.playsInline = true;
+      if (entry) {
+        const el = document.createElement(entry.type === "video" ? "video" : "img");
+        el.className = "thumb";
+        el.src = entry.url;
+        if (entry.type === "video") {
+          el.muted = true;
+          el.playsInline = true;
+        }
+        thumbWrap.appendChild(el);
+        return;
       }
-      thumbWrap.appendChild(el);
+      // brak zdjęcia - jeśli to pierwszy/ostatni punkt, pokaż podgląd tej samej
+      // flagi start/meta, która i tak pokaże się w animacji, zamiast pustego miejsca
+      if (isFinish) {
+        thumbWrap.innerHTML = `<span class="thumb thumb-flag"><svg width="26" height="26" viewBox="0 0 24 24">
+          <line x1="7" y1="4" x2="7" y2="20" stroke="#1b1f23" stroke-width="1.8"/>
+          <rect x="7" y="4" width="5.5" height="3.5" fill="#1b1f23"/><rect x="12.5" y="4" width="5.5" height="3.5" fill="#fff" stroke="#1b1f23" stroke-width="0.4"/>
+          <rect x="7" y="7.5" width="5.5" height="3.5" fill="#fff" stroke="#1b1f23" stroke-width="0.4"/><rect x="12.5" y="7.5" width="5.5" height="3.5" fill="#1b1f23"/>
+        </svg></span>`;
+      } else if (isStart) {
+        thumbWrap.innerHTML = `<span class="thumb thumb-flag"><svg width="26" height="26" viewBox="0 0 24 24">
+          <line x1="7" y1="4" x2="7" y2="20" stroke="#1b1f23" stroke-width="1.8"/>
+          <rect x="7" y="4" width="11" height="7" fill="#2d6a4f" stroke="#1b1f23" stroke-width="1"/>
+        </svg></span>`;
+      }
     }
     renderThumb(waypointPhotos[i]);
 
