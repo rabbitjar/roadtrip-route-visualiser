@@ -228,6 +228,14 @@
   }
   .photoset-row { position: relative; background: var(--paper); }
   .photoset-row.dragging { z-index: 20; box-shadow: 0 4px 14px rgba(0,0,0,0.18); border-radius: 8px; }
+  .thumb-flag {
+    width: 36px; height: 36px; border-radius: 6px; flex-shrink: 0;
+    border: 1px solid var(--line); background: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .drag-handle-locked {
+    cursor: default; font-size: 0.95rem; touch-action: auto;
+  }
   .photoset-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
   .ps-replace-btn, .ps-remove-btn {
     margin-top: 0; width: 32px; height: 32px; padding: 0;
@@ -258,6 +266,10 @@
     <input type="file" accept="image/*,video/*" multiple id="photoSetInput" style="display:none">
     <input type="file" accept="image/*,video/*" id="photoSetReplaceInput" style="display:none">
     <button type="button" id="photoSetAddBtn" class="secondary-btn">+ Wybierz zdjęcia/filmy</button>
+    <div class="nav-row">
+      <button type="button" id="addStartMarkerBtn" class="secondary-btn">+ Start bez zdjęcia</button>
+      <button type="button" id="addFinishMarkerBtn" class="secondary-btn">+ Meta bez zdjęcia</button>
+    </div>
     <div id="photoSetList"></div>
     <button id="step1PhotosNextBtn" disabled>Dalej: Zbuduj trasę →</button>
   </div>
@@ -1561,10 +1573,35 @@ let photoSetIdCounter = 0;
 let manualOrderApplied = false; // po ręcznym przeciągnięciu przestajemy sortować po czasie
 
 function getOrderedPhotoSetEntries() {
-  return manualOrderApplied
-    ? photoSetEntries
+  const base = manualOrderApplied
+    ? [...photoSetEntries]
     : [...photoSetEntries].sort((a, b) => a.timestamp - b.timestamp);
+  // punkty start/meta bez zdjęcia zawsze trzymają swoją pozycję na krańcach trasy,
+  // niezależnie od czasu zrobienia zdjęcia czy ręcznej kolejności reszty
+  const start = base.filter((e) => e.kind === "start");
+  const finish = base.filter((e) => e.kind === "finish");
+  const middle = base.filter((e) => e.kind !== "start" && e.kind !== "finish");
+  return [...start, ...middle, ...finish];
 }
+
+// jeśli którykolwiek świeżo dodany plik ma zapamiętaną pozycję (bo już kiedyś
+// był w tej appce, np. przed przeładowaniem strony) - przywróć tę kolejność
+// zamiast domyślnego sortowania po czasie zdjęcia
+function applyRememberedOrder() {
+  const mem = loadPhotoMemory();
+  const hasRememberedOrder = photoSetEntries.some(
+    (e) => e.fileKey && mem[e.fileKey] && typeof mem[e.fileKey].order === "number"
+  );
+  if (!hasRememberedOrder) return;
+  photoSetEntries.sort((a, b) => {
+    const oa = mem[a.fileKey]?.order ?? Infinity;
+    const ob = mem[b.fileKey]?.order ?? Infinity;
+    return oa - ob;
+  });
+  manualOrderApplied = true;
+  renderPhotoSetList();
+}
+
 let replacingEntryId = null;
 
 function isValidLatLng(lat, lng) {
@@ -1609,6 +1646,40 @@ function parseLatLngPaste(str) {
   return null;
 }
 
+const PHOTO_MEMORY_KEY = "routeVisualiserPhotoMemory_v1";
+
+function photoMemoryKeyFor(file) {
+  return `${file.name}__${file.size}`;
+}
+
+function loadPhotoMemory() {
+  try {
+    const raw = localStorage.getItem(PHOTO_MEMORY_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+// Zapamiętuje ręcznie wpisane (lub odczytane z EXIF) współrzędne oraz kolejność
+// KAŻDEGO pliku (po nazwie+rozmiarze), żeby po przeładowaniu strony i ponownym
+// wybraniu TYCH SAMYCH plików nie trzeba było wpisywać współrzędnych od nowa.
+// Samych plików (danych binarnych) nie da się sensownie trzymać w localStorage
+// (limit ~5-10MB, a zdjęcia z telefonu to megabajty każde) - trzeba je wybrać
+// ponownie, ale to żmudne wpisywanie współrzędnych już nie wróci.
+function savePhotoMemory() {
+  try {
+    const mem = loadPhotoMemory();
+    getOrderedPhotoSetEntries().forEach((e, i) => {
+      if (!e.fileKey) return;
+      mem[e.fileKey] = { lat: e.lat, lng: e.lng, status: e.status, order: i };
+    });
+    localStorage.setItem(PHOTO_MEMORY_KEY, JSON.stringify(mem));
+  } catch {
+    // localStorage niedostępny (np. tryb prywatny) - trudno, po prostu nie zapamiętujemy
+  }
+}
+
 async function processPhotoFile(file) {
   const { type, mediaEl, url } = await loadMediaFromFile(file);
   let exif = null;
@@ -1621,16 +1692,32 @@ async function processPhotoFile(file) {
   // DateTimeOriginal bywa nieobecne (filmy prawie zawsze, edytowane zdjęcia czasem)
   // - wtedy data modyfikacji pliku jako zapasowe źródło kolejności
   const timestamp = exif?.DateTimeOriginal instanceof Date ? exif.DateTimeOriginal.getTime() : file.lastModified;
+
+  let lat = hasGps ? exif.latitude : null;
+  let lng = hasGps ? exif.longitude : null;
+  let status = hasGps ? "ok" : "no-gps";
+
+  const fileKey = photoMemoryKeyFor(file);
+  if (!hasGps) {
+    const remembered = loadPhotoMemory()[fileKey];
+    if (remembered && remembered.status === "ok") {
+      lat = remembered.lat;
+      lng = remembered.lng;
+      status = "ok";
+    }
+  }
+
   return {
     id: `p${photoSetIdCounter++}`,
     name: file.name,
+    fileKey,
     type,
     mediaEl,
     url,
     timestamp,
-    lat: hasGps ? exif.latitude : null,
-    lng: hasGps ? exif.longitude : null,
-    status: hasGps ? "ok" : "no-gps",
+    lat,
+    lng,
+    status,
   };
 }
 
@@ -1642,7 +1729,7 @@ function updatePhotoSetNextBtn() {
 let dragCtx = null; // { entryId, pointerId, startY, row }
 
 function setupDragHandles(container) {
-  container.querySelectorAll(".drag-handle").forEach((handle) => {
+  container.querySelectorAll(".drag-handle:not(.drag-handle-locked)").forEach((handle) => {
     handle.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       const row = handle.closest(".photoset-row");
@@ -1698,6 +1785,7 @@ function finishDrag(dropClientY) {
     newOrder.splice(targetIndex, 0, moved);
     photoSetEntries = newOrder;
     manualOrderApplied = true;
+    savePhotoMemory();
   }
 
   dragCtx = null;
@@ -1712,27 +1800,60 @@ function renderPhotoSetList() {
   sorted.forEach((entry, i) => {
     const row = document.createElement("div");
     row.className = "photoset-row";
+    const isPinned = entry.kind === "start" || entry.kind === "finish";
+    const noLocationLabel = isPinned
+      ? "wpisz lokalizację"
+      : entry.type === "video"
+      ? "filmy nie mają GPS"
+      : "brak GPS w zdjęciu";
     const statusHtml =
       entry.status === "ok"
         ? `<div class="photoset-status ok">✓ ${entry.lat.toFixed(4)}, ${entry.lng.toFixed(4)}</div>`
-        : `<div class="photoset-status warn">⚠ brak lokalizacji (${entry.type === "video" ? "filmy nie mają GPS" : "brak GPS w zdjęciu"})</div>
+        : `<div class="photoset-status warn">⚠ brak lokalizacji (${noLocationLabel})</div>
            <div class="manual-coords-row">
              <input type="text" placeholder="Wklej współrzędne z Google Maps tutaj" class="manual-coords-input" data-id="${entry.id}">
              <button type="button" class="manual-coords-btn" data-id="${entry.id}">Ustaw</button>
            </div>
            <div class="manual-coords-error" data-id="${entry.id}"></div>`;
-    const thumbTag =
-      entry.type === "video"
-        ? `<video class="thumb" src="${entry.url}" muted playsinline></video>`
-        : `<img class="thumb" src="${entry.url}">`;
+
+    let thumbTag;
+    if (entry.kind === "start") {
+      thumbTag = `<span class="thumb thumb-flag"><svg width="26" height="26" viewBox="0 0 24 24">
+        <line x1="7" y1="4" x2="7" y2="20" stroke="#1b1f23" stroke-width="1.8"/>
+        <rect x="7" y="4" width="11" height="7" fill="#2d6a4f" stroke="#1b1f23" stroke-width="1"/>
+      </svg></span>`;
+    } else if (entry.kind === "finish") {
+      thumbTag = `<span class="thumb thumb-flag"><svg width="26" height="26" viewBox="0 0 24 24">
+        <line x1="7" y1="4" x2="7" y2="20" stroke="#1b1f23" stroke-width="1.8"/>
+        <rect x="7" y="4" width="5.5" height="3.5" fill="#1b1f23"/><rect x="12.5" y="4" width="5.5" height="3.5" fill="#fff" stroke="#1b1f23" stroke-width="0.4"/>
+        <rect x="7" y="7.5" width="5.5" height="3.5" fill="#fff" stroke="#1b1f23" stroke-width="0.4"/><rect x="12.5" y="7.5" width="5.5" height="3.5" fill="#1b1f23"/>
+      </svg></span>`;
+    } else if (entry.type === "video") {
+      thumbTag = `<video class="thumb" src="${entry.url}" muted playsinline></video>`;
+    } else {
+      thumbTag = `<img class="thumb" src="${entry.url}">`;
+    }
+
+    const dragHandleHtml = isPinned
+      ? `<span class="drag-handle drag-handle-locked" title="${entry.kind === "start" ? "Start" : "Meta"} — zawsze na ${entry.kind === "start" ? "początku" : "końcu"} trasy">📍</span>`
+      : `<span class="drag-handle" data-id="${entry.id}" title="Przeciągnij, żeby zmienić kolejność">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20" fill="#5b5f63">
+            <circle cx="4" cy="3" r="1.6"/><circle cx="12" cy="3" r="1.6"/>
+            <circle cx="4" cy="10" r="1.6"/><circle cx="12" cy="10" r="1.6"/>
+            <circle cx="4" cy="17" r="1.6"/><circle cx="12" cy="17" r="1.6"/>
+          </svg>
+        </span>`;
+    const replaceBtnHtml = isPinned
+      ? ""
+      : `<button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1b1f23" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
+            <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
+          </svg>
+        </button>`;
+
     row.innerHTML = `
-      <span class="drag-handle" data-id="${entry.id}" title="Przeciągnij, żeby zmienić kolejność">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20" fill="#5b5f63">
-          <circle cx="4" cy="3" r="1.6"/><circle cx="12" cy="3" r="1.6"/>
-          <circle cx="4" cy="10" r="1.6"/><circle cx="12" cy="10" r="1.6"/>
-          <circle cx="4" cy="17" r="1.6"/><circle cx="12" cy="17" r="1.6"/>
-        </svg>
-      </span>
+      ${dragHandleHtml}
       <span class="num">${i + 1}.</span>
       ${thumbTag}
       <div class="photoset-info">
@@ -1740,12 +1861,7 @@ function renderPhotoSetList() {
         ${statusHtml}
       </div>
       <div class="photoset-actions">
-        <button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień">
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1b1f23" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
-            <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
-          </svg>
-        </button>
+        ${replaceBtnHtml}
         <button type="button" class="ps-remove-btn" data-id="${entry.id}" title="Usuń">✕</button>
       </div>
     `;
@@ -1760,6 +1876,7 @@ function renderPhotoSetList() {
       photoSetEntries = photoSetEntries.filter((e) => e.id !== btn.dataset.id);
       renderPhotoSetList();
       updatePhotoSetNextBtn();
+      updatePinnedMarkerButtons();
     });
   });
   container.querySelectorAll(".ps-replace-btn").forEach((btn) => {
@@ -1782,6 +1899,7 @@ function renderPhotoSetList() {
       entry.lat = parsed.lat;
       entry.lng = parsed.lng;
       entry.status = "ok";
+      savePhotoMemory();
       renderPhotoSetList();
       updatePhotoSetNextBtn();
     }
@@ -1809,6 +1927,34 @@ document.getElementById("photoSetAddBtn").addEventListener("click", () => {
   document.getElementById("photoSetInput").click();
 });
 
+function addPinnedMarker(kind) {
+  if (photoSetEntries.some((e) => e.kind === kind)) return; // tylko jeden start i jedna meta
+  photoSetEntries.push({
+    id: `p${photoSetIdCounter++}`,
+    name: kind === "start" ? "Start" : "Meta",
+    fileKey: null,
+    type: null,
+    mediaEl: null,
+    url: null,
+    timestamp: kind === "start" ? -Infinity : Infinity, // niezależnie i tak wymuszone przez getOrderedPhotoSetEntries
+    lat: null,
+    lng: null,
+    status: "no-gps",
+    kind,
+  });
+  renderPhotoSetList();
+  updatePhotoSetNextBtn();
+  updatePinnedMarkerButtons();
+}
+
+function updatePinnedMarkerButtons() {
+  document.getElementById("addStartMarkerBtn").disabled = photoSetEntries.some((e) => e.kind === "start");
+  document.getElementById("addFinishMarkerBtn").disabled = photoSetEntries.some((e) => e.kind === "finish");
+}
+
+document.getElementById("addStartMarkerBtn").addEventListener("click", () => addPinnedMarker("start"));
+document.getElementById("addFinishMarkerBtn").addEventListener("click", () => addPinnedMarker("finish"));
+
 document.getElementById("photoSetInput").addEventListener("change", async (e) => {
   const files = Array.from(e.target.files);
   e.target.value = ""; // pozwala wybrać te same pliki ponownie w przyszłości
@@ -1824,6 +1970,7 @@ document.getElementById("photoSetInput").addEventListener("change", async (e) =>
     photoSetEntries.push(await processPhotoFile(file));
     renderPhotoSetList();
   }
+  applyRememberedOrder();
   updatePhotoSetNextBtn();
 });
 
@@ -1849,7 +1996,11 @@ document.getElementById("step1PhotosNextBtn").addEventListener("click", async ()
   btn.disabled = true;
   const originalLabel = btn.textContent;
   try {
-    const waypoints = sorted.map((e, i) => ({ name: `Zdjęcie ${i + 1}`, lat: e.lat, lng: e.lng }));
+    const waypoints = sorted.map((e, i) => ({
+      name: e.kind === "start" || e.kind === "finish" ? e.name : `Zdjęcie ${i + 1}`,
+      lat: e.lat,
+      lng: e.lng,
+    }));
     lastWaypoints = waypoints;
     // zdjęcia są już "dołączone" - to one były źródłem trasy
     waypointPhotos = sorted.map((e) => ({ type: e.type, mediaEl: e.mediaEl, url: e.url }));
