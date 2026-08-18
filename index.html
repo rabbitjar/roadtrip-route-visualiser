@@ -76,7 +76,9 @@
     border-radius: 8px;
     border: 1px solid var(--line);
   }
+  #map { z-index: 1; }
   #stageCanvas {
+    z-index: 2; /* zawsze nad mapą - bez tego kontrolki MapLibre (np. atrybucja OSM) potrafiły "prześwitywać" nad powiększonym zdjęciem */
     display: none; /* pokazywany tylko podczas animacji/eksportu - to on jest nagrywany */
     background: #fff;
   }
