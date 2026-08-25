@@ -751,18 +751,27 @@ function svgToImage(svgString) {
   });
 }
 
+// znacznik jazdy (motocykl/samochód/etc.) jest rysowany BEZPOŚREDNIO na
+// stageCanvas (patrz drawMotoMarker), tak jak przystanki — NIE jako natywna
+// warstwa symboli MapLibre. Wcześniej był warstwą "moto-marker" ze źródłem
+// GeoJSON podmienianym co klatkę animacji (setData()); to zmuszało MapLibre
+// do przebudowy kafla/bucketu i przeliczenia kolizji symboli 60x/s, co przy
+// realnym obciążeniu potrafiło losowo wyrenderować znacznik jako maleńką
+// ikonkę zamiast pełnego kółka (albo w ogóle go pominąć) — zarówno w
+// podglądzie live, jak i w nagranym wideo. Rysowanie własnoręcznie na
+// canvasie omija cały ten mechanizm i jest deterministyczne.
+const iconImages = {}; // key / key+"-flip" -> gotowy <img> (z białym kółkiem w tle)
+
 let iconsLoadingPromise = null;
-async function loadAllActivityIcons(mapInstance) {
+async function loadAllActivityIcons() {
   if (iconsLoadingPromise) return iconsLoadingPromise;
   iconsLoadingPromise = (async () => {
     for (const [key, def] of Object.entries(ICON_LIBRARY)) {
-      if (!mapInstance.hasImage(key)) {
-        const img = await svgToImage(buildIconSvg(def.paths, false));
-        if (!mapInstance.hasImage(key)) mapInstance.addImage(key, img);
+      if (!iconImages[key]) {
+        iconImages[key] = await svgToImage(buildIconSvg(def.paths, false));
       }
-      if (!mapInstance.hasImage(key + "-flip")) {
-        const imgFlip = await svgToImage(buildIconSvg(def.paths, true));
-        if (!mapInstance.hasImage(key + "-flip")) mapInstance.addImage(key + "-flip", imgFlip);
+      if (!iconImages[key + "-flip"]) {
+        iconImages[key + "-flip"] = await svgToImage(buildIconSvg(def.paths, true));
       }
     }
   })();
@@ -805,22 +814,10 @@ function buildIconPickerUI() {
       selectedIconKey = key;
       document.querySelectorAll(".icon-choice").forEach((el) => el.classList.remove("active"));
       btn.classList.add("active");
-      updateMotoIconLayer();
       saveSettings();
     });
     container.appendChild(btn);
   });
-}
-
-function updateMotoIconLayer() {
-  if (!map || !map.getLayer("moto-marker")) return;
-  map.setLayoutProperty("moto-marker", "icon-image", [
-    "case",
-    ["get", "flip"],
-    selectedIconKey + "-flip",
-    selectedIconKey,
-  ]);
-  map.setLayoutProperty("moto-marker", "icon-size", iconScale);
 }
 
 /* ---------- 5) Mapa (MapLibre + OpenFreeMap, bez klucza) ---------- */
@@ -835,6 +832,11 @@ let routeColor = "#ff4d1f";
 // (docelowo ten parametr zniknie całkiem, jak tylko znajdziemy optymalną wartość)
 const WOBBLE_FREQUENCY = 5;
 let wobbleAmplitude = 0; // domyślnie wyłączone (selektor startuje na 0)
+
+// znacznik jazdy — rysowany bezpośrednio na stageCanvas (patrz drawMotoMarker
+// i komentarz przy iconImages), nie jako źródło/warstwa MapLibre
+let motoMarkerVisible = false;
+let motoMarkerState = { lng: 0, lat: 0, rotate: 0, flip: false };
 
 let waypointFeatures = []; // { lng, lat, name, distanceAlong, revealed, photoImage }
 
@@ -955,6 +957,24 @@ function drawWaypointMarkers(showNumbers = false) {
   });
 }
 
+// znacznik jazdy — patrz komentarz przy iconImages, dlaczego to zwykły
+// drawImage zamiast warstwy symboli MapLibre
+function drawMotoMarker() {
+  if (!motoMarkerVisible) return;
+  const key = selectedIconKey + (motoMarkerState.flip ? "-flip" : "");
+  const img = iconImages[key];
+  if (!img) return;
+  const rect = map.getContainer().getBoundingClientRect();
+  const scale = STAGE_W / rect.width;
+  const size = 96 * iconScale * scale; // te same proporcje co dawny icon-size 96px-owego sprite'a
+  const [x, y] = projectToStage(motoMarkerState.lng, motoMarkerState.lat);
+  stageCtx.save();
+  stageCtx.translate(x, y);
+  stageCtx.rotate((motoMarkerState.rotate * Math.PI) / 180);
+  stageCtx.drawImage(img, -size / 2, -size / 2, size, size);
+  stageCtx.restore();
+}
+
 // wywoływane, gdy sekwencja pełnoekranowego pokazania zdjęcia się zakończy —
 // od tej pory mały znacznik na trasie pokazuje to zdjęcie jako miniaturkę
 // (rysowaną na canvasie, patrz drawWaypointMarkers)
@@ -1037,25 +1057,8 @@ function showRouteOnMap(coordinates, waypoints) {
         paint: { "line-color": routeColor, "line-width": 4 },
       });
 
-      map.addSource("moto", {
-        type: "geojson",
-        data: { type: "Feature", geometry: { type: "Point", coordinates: coordinates[0] }, properties: { bearing: 0, flip: false } },
-      });
-      await loadAllActivityIcons(map);
-      map.addLayer({
-        id: "moto-marker",
-        type: "symbol",
-        source: "moto",
-        layout: {
-          "icon-image": ["case", ["get", "flip"], selectedIconKey + "-flip", selectedIconKey],
-          "icon-size": iconScale,
-          "icon-rotate": ["get", "bearing"],
-          "icon-rotation-alignment": "map",
-          "icon-allow-overlap": true,
-          "icon-ignore-placement": true,
-        },
-      });
-      setLayerVisible("moto-marker", false);
+      await loadAllActivityIcons();
+      motoMarkerVisible = false;
       setLayerVisible("trail-line", false);
 
       rebuildWaypointMarkers(coordinates, cum, waypoints);
@@ -1276,9 +1279,8 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   ensureStageCanvas();
   document.getElementById("stageCanvas").style.display = "block";
 
-  await loadAllActivityIcons(map);
+  await loadAllActivityIcons();
   preloadPhotoThumbnails();
-  updateMotoIconLayer();
 
   // animuj po przepróbkowanej, "lekkiej" wersji trasy — patrz komentarz przy resampleByDistance
   const fullCum = buildCumulativeDistances(coordinates);
@@ -1299,7 +1301,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
   // trasa i przystanki niewidoczne na starcie, motocykl w punkcie startowym
   setLayerVisible("route-line", false);
   setLayerVisible("trail-line", true);
-  setLayerVisible("moto-marker", true);
+  motoMarkerVisible = true;
   map.getSource("trail").setData({ type: "Feature", geometry: { type: "LineString", coordinates: [] } });
   hideAllWaypointMarkers();
   hideAllPhotoBadges();
@@ -1324,6 +1326,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       if (mode === "traveling") {
         try {
           compositeMapToStage();
+          drawMotoMarker();
           drawWaypointMarkers();
           drawDistanceCounter(currentDistanceKm);
         } catch (e) {
@@ -1337,7 +1340,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       map.off("render", onMapRender);
       setLayerVisible("route-line", true);
       setLayerVisible("trail-line", false);
-      setLayerVisible("moto-marker", false);
+      motoMarkerVisible = false;
       showStaticPreviewOnStage();
       animationRunning = false;
     }
@@ -1382,11 +1385,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
       const wobble = Math.sin((now - startTime) / 1000 * WOBBLE_FREQUENCY) * wobbleAmplitude;
       const { flip, rotate } = iconOrientation(lastHeading + wobble);
 
-      map.getSource("moto").setData({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: pos },
-        properties: { bearing: rotate, flip },
-      });
+      motoMarkerState = { lng: pos[0], lat: pos[1], rotate, flip };
       map.getSource("trail").setData({
         type: "Feature",
         geometry: { type: "LineString", coordinates: trailUpToDistance(animCoords, cum, distAlong) },
@@ -1402,6 +1401,7 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
 
       if (justReached) {
         compositeMapToStage(); // upewnij się, że ostatnia klatka przed zamrożeniem jest aktualna
+        drawMotoMarker();
         drawWaypointMarkers();
         drawDistanceCounter(currentDistanceKm);
         frozenCtx.drawImage(stageCanvas, 0, 0);
@@ -1422,11 +1422,12 @@ async function animateRoute(coordinates, durationSeconds, onProgress) {
         requestAnimationFrame(frame);
       } else {
         showAllWaypointMarkers(); // zabezpieczenie na drobną rozbieżność dystansu resamplingu
-        setLayerVisible("moto-marker", false); // na końcu znacznik dojazdu nie powinien nakładać się na znacznik celu
+        motoMarkerVisible = false; // na końcu znacznik dojazdu nie powinien nakładać się na znacznik celu
         map.off("render", onMapRender);
 
         const paintFinal = () => {
           compositeMapToStage();
+          drawMotoMarker();
           drawWaypointMarkers();
           drawDistanceCounter(currentDistanceKm);
         };
@@ -2200,7 +2201,6 @@ const setIconSize = wireCombo("sizeInput", "sizeSlider", {
   fallback: 0.4,
   onChange: (v) => {
     iconScale = v;
-    updateMotoIconLayer();
   },
 });
 
@@ -2266,7 +2266,7 @@ function resetToStaticPreview() {
   if (map) {
     setLayerVisible("route-line", true);
     setLayerVisible("trail-line", false);
-    setLayerVisible("moto-marker", false);
+    motoMarkerVisible = false;
     showStaticPreviewOnStage();
   }
 }
