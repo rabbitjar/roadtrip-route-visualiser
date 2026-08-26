@@ -1557,10 +1557,27 @@ function loadMediaFromFile(file) {
     video.playsInline = true;
     video.preload = "auto";
     video.loop = true;
+    // KLUCZOWE: element MUSI być w DOM-ie (niewidoczny, ale nie display:none/
+    // visibility:hidden — te wstrzymują dekodowanie). Chrome na Androidzie
+    // przestaje odświeżać klatki elementu <video>, który nigdy nie trafił do
+    // drzewa dokumentu — .play() "się udawał", ale rysowany na canvasie obraz
+    // zostawał zamrożony na pierwszej klatce (nieruchome wideo podczas reveal).
+    video.style.cssText = "position:fixed; width:2px; height:2px; opacity:0.01; pointer-events:none;";
+    document.body.appendChild(video);
     video.onloadeddata = () => resolve({ type: "video", mediaEl: video, url });
     video.onerror = reject;
     video.src = url;
   });
+}
+
+// sprząta po podmienionym/usuniętym wideo — patrz komentarz w loadMediaFromFile,
+// dlaczego <video> w ogóle trafia do DOM-u; bez tego zamieniane/usuwane pliki
+// zostawiałyby po sobie osierocone, ukryte elementy <video> na stałe
+function detachMediaEl(entry) {
+  if (entry?.mediaEl instanceof HTMLVideoElement) {
+    entry.mediaEl.pause();
+    entry.mediaEl.remove();
+  }
 }
 
 function getMediaSize(el) {
@@ -1886,6 +1903,7 @@ function renderPhotoSetList() {
 
   container.querySelectorAll(".ps-remove-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
+      detachMediaEl(photoSetEntries.find((e) => e.id === btn.dataset.id));
       photoSetEntries = photoSetEntries.filter((e) => e.id !== btn.dataset.id);
       renderPhotoSetList();
       updatePhotoSetNextBtn();
@@ -1995,6 +2013,7 @@ document.getElementById("photoSetReplaceInput").addEventListener("change", async
   if (idx === -1) return;
   const newEntry = await processPhotoFile(file);
   newEntry.id = replacingEntryId; // zachowaj pozycję na liście
+  detachMediaEl(photoSetEntries[idx]);
   photoSetEntries[idx] = newEntry;
   replacingEntryId = null;
   renderPhotoSetList();
@@ -2092,6 +2111,7 @@ function buildPhotosUI(waypoints) {
       if (!file) return;
       try {
         const entry = await loadMediaFromFile(file);
+        detachMediaEl(waypointPhotos[i]);
         waypointPhotos[i] = entry;
         renderThumb(entry);
         // KLUCZOWE: waypointFeatures budują się od razu po pobraniu trasy (krok 1),
