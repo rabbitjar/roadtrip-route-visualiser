@@ -58,6 +58,8 @@
     margin-top: 14px;
   }
   .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: #5b5f63; margin: 0 0 8px; }
+  .reset-default { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .reset-default:hover, .reset-default:active { color: var(--ink); }
   .stat { display: flex; justify-content: space-between; font-size: 0.92rem; padding: 3px 0; }
   .err { color: var(--err); font-size: 0.9rem; white-space: pre-wrap; }
   #mapWrap {
@@ -346,35 +348,35 @@
   <button class="options-toggle" data-target="opts3">⚙ Opcje (prędkość, nerwowość, rozmiar) ▾</button>
   <div id="opts3" class="options-panel" style="display:none">
     <div class="card">
-      <h2>Prędkość posuwania znacznika</h2>
+      <h2>Prędkość posuwania znacznika <span class="reset-default" data-reset="speed" title="Przywróć wartość domyślną">(domyślnie: 1)</span></h2>
       <div class="combo-control">
         <input type="text" inputmode="decimal" id="speedInput" value="1">
         <input type="range" id="speedSlider" min="2" max="50" step="1" value="10">
       </div>
     </div>
     <div class="card">
-      <h2>Nerwowość ruchu (0-10)</h2>
+      <h2>Nerwowość ruchu (0-10) <span class="reset-default" data-reset="wobble" title="Przywróć wartość domyślną">(domyślnie: 0)</span></h2>
       <div class="combo-control">
         <input type="text" inputmode="decimal" id="wobbleInput" value="0">
         <input type="range" id="wobbleSlider" min="0" max="10" step="1" value="0">
       </div>
     </div>
     <div class="card">
-      <h2>Rozmiar ikony</h2>
+      <h2>Rozmiar ikony <span class="reset-default" data-reset="size" title="Przywróć wartość domyślną">(domyślnie: 0.4)</span></h2>
       <div class="combo-control">
         <input type="text" inputmode="decimal" id="sizeInput" value="0.4">
         <input type="range" id="sizeSlider" min="2" max="8" step="1" value="4">
       </div>
     </div>
     <div class="card">
-      <h2>Czas powiększania zdjęcia (s)</h2>
+      <h2>Czas powiększania zdjęcia (s) <span class="reset-default" data-reset="grow" title="Przywróć wartość domyślną">(domyślnie: 1.5)</span></h2>
       <div class="combo-control">
         <input type="text" inputmode="decimal" id="growInput" value="1.5">
         <input type="range" id="growSlider" min="2" max="50" step="1" value="15">
       </div>
     </div>
     <div class="card">
-      <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s)</h2>
+      <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s) <span class="reset-default" data-reset="hold" title="Przywróć wartość domyślną">(domyślnie: 1)</span></h2>
       <div class="combo-control">
         <input type="text" inputmode="decimal" id="holdInput" value="1">
         <input type="range" id="holdSlider" min="2" max="50" step="1" value="10">
@@ -2355,11 +2357,13 @@ function wireCombo(textId, sliderId, { toValue, toSlider, fallback, onChange }) 
     saveSettings();
   });
 
-  return function setValue(v) {
+  function setValue(v) {
     textEl.value = formatNum(v);
     sliderEl.value = toSlider(v);
     onChange(v);
-  };
+  }
+  setValue.default = fallback; // do przycisku "przywróć domyślne" przy suwaku
+  return setValue;
 }
 
 const setSpeed = wireCombo("speedInput", "speedSlider", {
@@ -2406,6 +2410,16 @@ const setHold = wireCombo("holdInput", "holdSlider", {
   onChange: (v) => {
     REVEAL_HOLD_MS = v * 1000;
   },
+});
+
+// kliknięcie w "(domyślnie: X)" przy suwaku przywraca jego wartość fabryczną
+const RESET_SETTERS = { speed: setSpeed, wobble: setWobble, size: setIconSize, grow: setGrow, hold: setHold };
+document.querySelectorAll(".reset-default").forEach((el) => {
+  const setter = RESET_SETTERS[el.dataset.reset];
+  el.addEventListener("click", () => {
+    setter(setter.default);
+    saveSettings();
+  });
 });
 
 async function playAnimation() {
