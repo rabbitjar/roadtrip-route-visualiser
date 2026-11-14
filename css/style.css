@@ -68,7 +68,9 @@ button:disabled { opacity: 0.5; }
   width: 100%;
   height: 100%;
   border-radius: 8px;
-  border: 1px solid var(--line);
+  /* ramka jako cień, nie border: border zmniejszałby obszar mapy o 2 px i psuł
+     dokładne przeliczenie współrzędnych mapa -> scena */
+  box-shadow: 0 0 0 1px var(--line);
 }
 #map { z-index: 1; }
 #stageCanvas {

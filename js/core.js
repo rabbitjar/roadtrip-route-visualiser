@@ -238,11 +238,107 @@ function safeDecodeURIComponent(str) {
   }
 }
 
+/* ---------- Oś czasu animacji (czyste funkcje — bez zegara, bez DOM) ---------- */
+
+// Pozycje punktów trasy jako ułamek całej trasy (0..1), liczone z odcinków
+// ("legs") zwróconych przez router: punkt i leży dokładnie na końcu odcinka i-1.
+// To jedyny pewny sposób przy pętlach (start = meta) i trasach, które dwa razy
+// przechodzą przez to samo miejsce — szukanie "najbliższego punktu geometrii"
+// zwracało wtedy pierwsze trafienie, czyli np. metę na samym starcie.
+function waypointFractionsFromLegs(legs) {
+  const lengths = (legs || []).map((l) => Math.max(0, Number(l?.distance) || 0));
+  const total = lengths.reduce((a, b) => a + b, 0);
+  const fractions = [0];
+  let acc = 0;
+  lengths.forEach((len, i) => {
+    acc += len;
+    // gdy cała trasa ma długość 0, rozkładamy punkty równomiernie zamiast dzielić przez zero
+    fractions.push(total > 0 ? Math.min(acc / total, 1) : (i + 1) / lengths.length);
+  });
+  return fractions;
+}
+
+// Zapasowy wariant bez "legs" (np. ślad GPX): dopasowuje punkty do geometrii
+// PO KOLEI — każdy kolejny punkt szukany jest dopiero od miejsca poprzedniego,
+// dzięki czemu pętla też dostaje rosnące pozycje.
+function monotonicWaypointFractions(coords, cum, waypoints) {
+  const total = cum[cum.length - 1];
+  let from = 0;
+  return waypoints.map((w, wi) => {
+    if (wi === 0) return 0;
+    if (wi === waypoints.length - 1) return 1;
+    let best = from, bestDist = Infinity;
+    for (let i = from; i < coords.length; i++) {
+      const d = haversineMeters(coords[i], [w.lng, w.lat]);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    from = best;
+    return total > 0 ? cum[best] / total : 0;
+  });
+}
+
+// Buduje oś czasu animacji: odcinki jazdy przeplatane pokazami zdjęć.
+// stops: [{ index, dist, hasMedia }] — dist w tych samych jednostkach co total.
+// Każdy przystanek ze zdjęciem dostaje WŁASNY odcinek "reveal", więc dwa zdjęcia
+// w tym samym miejscu pokazują się jedno po drugim (wcześniej drugie przepadało).
+function buildTimeline({ total, travelMs, stops, revealMs = 0, startHoldMs = 0, endHoldMs = 0 }) {
+  const sorted = stops
+    .map((s) => ({ ...s, dist: Math.max(0, Math.min(Number(s.dist) || 0, total)) }))
+    .sort((a, b) => a.dist - b.dist || a.index - b.index);
+  const segments = [];
+  const marks = {};
+  let t = 0, d = 0;
+  if (startHoldMs > 0) {
+    segments.push({ type: "start", t0: 0, t1: startHoldMs, d0: 0, d1: 0 });
+    t = startHoldMs;
+  }
+  const travelTo = (dist) => {
+    if (dist <= d) return;
+    const dt = total > 0 ? ((dist - d) / total) * travelMs : 0;
+    segments.push({ type: "travel", t0: t, t1: t + dt, d0: d, d1: dist });
+    t += dt;
+    d = dist;
+  };
+  for (const s of sorted) {
+    travelTo(s.dist);
+    marks[s.index] = { tReveal: t, tSettle: t };
+    if (s.hasMedia && revealMs > 0) {
+      segments.push({ type: "reveal", t0: t, t1: t + revealMs, d0: d, d1: d, stopIndex: s.index });
+      t += revealMs;
+      marks[s.index].tSettle = t;
+    }
+  }
+  travelTo(total);
+  segments.push({ type: "end", t0: t, t1: t + endHoldMs, d0: total, d1: total });
+  return { segments, marks, total, totalMs: t + endHoldMs };
+}
+
+// Stan animacji w chwili t (ms): rodzaj odcinka, przebyty dystans, czas od początku odcinka.
+function timelineStateAt(timeline, t) {
+  const segs = timeline.segments;
+  const time = Math.max(0, Math.min(t, timeline.totalMs));
+  let seg = segs[segs.length - 1];
+  for (const s of segs) {
+    if (time < s.t1) { seg = s; break; }
+  }
+  const span = seg.t1 - seg.t0;
+  const local = span > 0 ? Math.min(Math.max((time - seg.t0) / span, 0), 1) : 1;
+  return {
+    type: seg.type,
+    dist: seg.d0 + (seg.d1 - seg.d0) * local,
+    elapsed: time - seg.t0,
+    local,
+    stopIndex: seg.stopIndex ?? null,
+    progress: timeline.totalMs > 0 ? time / timeline.totalMs : 1,
+  };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseGoogleMapsLink, haversineMeters, buildCumulativeDistances, indexAtDistance,
     positionAtDistance, bearingDegrees, headingAtDistance, trailUpToDistance,
     resampleByDistance, distanceAlongForWaypoint, isValidLatLng, parseLatLngPaste,
     formatPlaceLabel, parseDecimalInput, formatNum, escapeHtml, safeDecodeURIComponent,
+    waypointFractionsFromLegs, monotonicWaypointFractions, buildTimeline, timelineStateAt,
   };
 }
