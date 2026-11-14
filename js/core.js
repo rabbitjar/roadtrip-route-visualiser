@@ -3,7 +3,7 @@
    Ładowane w przeglądarce jako zwykły skrypt, w Node (testy) przez module.exports. */
 
 /* ---------- 1) Parser linku Google Maps ---------- */
-const TRAVEL_MODE_MAP = { 0: "driving", 1: "walking", 2: "bicycling", 3: "transit" };
+const TRAVEL_MODE_MAP = { 0: "driving", 1: "cycling", 2: "walking", 3: "transit" };
 
 function parseGoogleMapsLink(url) {
   let parsedUrl;
@@ -346,6 +346,7 @@ function timelineStateAt(timeline, t) {
 
 // "5 h 20 min" zamiast "5.3 h"
 function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) return "—";
   const totalMin = Math.max(0, Math.round((Number(seconds) || 0) / 60));
   const h = Math.floor(totalMin / 60), m = totalMin % 60;
   if (h === 0) return `${m} min`;
@@ -361,6 +362,205 @@ function formatDecimalPl(v, digits = 1) {
   return (Math.round(v * 10 ** digits) / 10 ** digits).toString().replace(".", ",");
 }
 
+/* ---------- Trasa w linii prostej (samolot, kajak, prom) ---------- */
+
+// Punkty na ortodromie (najkrótszej drodze po kuli) między a i b.
+function greatCirclePath([lng1, lat1], [lng2, lat2], segments) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+  const p1 = toRad(lat1), l1 = toRad(lng1), p2 = toRad(lat2), l2 = toRad(lng2);
+  const d = 2 * Math.asin(Math.sqrt(
+    Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin((l2 - l1) / 2) ** 2
+  ));
+  if (!(d > 0) || segments < 1) return [[lng1, lat1], [lng2, lat2]];
+  const points = [];
+  for (let i = 0; i <= segments; i++) {
+    const f = i / segments;
+    const A = Math.sin((1 - f) * d) / Math.sin(d);
+    const B = Math.sin(f * d) / Math.sin(d);
+    const x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+    const y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+    const z = A * Math.sin(p1) + B * Math.sin(p2);
+    points.push([toDeg(Math.atan2(y, x)), toDeg(Math.atan2(z, Math.hypot(x, y)))]);
+  }
+  points[0] = [lng1, lat1];
+  points[points.length - 1] = [lng2, lat2];
+  return points;
+}
+
+// Trasa łącząca punkty liniami prostymi — liczona lokalnie, bez serwera routingu.
+function buildStraightRoute(waypoints) {
+  const coordinates = [];
+  const legs = [];
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = [waypoints[i].lng, waypoints[i].lat];
+    const b = [waypoints[i + 1].lng, waypoints[i + 1].lat];
+    const distance = haversineMeters(a, b);
+    const segments = Math.max(1, Math.min(Math.ceil(distance / 20000), 200)); // punkt co ~20 km
+    const path = greatCirclePath(a, b, segments);
+    coordinates.push(...(i === 0 ? path : path.slice(1)));
+    legs.push({ distance });
+  }
+  // ciągłość długości geograficznej przy przekraczaniu 180° (bez skoku linii przez całą mapę)
+  for (let k = 1; k < coordinates.length; k++) {
+    while (coordinates[k][0] - coordinates[k - 1][0] > 180) coordinates[k][0] -= 360;
+    while (coordinates[k][0] - coordinates[k - 1][0] < -180) coordinates[k][0] += 360;
+  }
+  return {
+    coordinates,
+    distanceMeters: legs.reduce((sum, l) => sum + l.distance, 0),
+    durationSeconds: null, // nie zgadujemy czasu przelotu/przeprawy
+    waypointFractions: waypointFractionsFromLegs(legs),
+  };
+}
+
+/* ---------- Trasa ze śladu GPX ---------- */
+const GPX_MAX_POINTS = 20000;
+
+// trackPoints: [{ lat, lng, time? (ms) }], namedPoints: [{ lat, lng, name }]
+function buildGpxRoute(trackPoints, namedPoints = [], maxStops = 20) {
+  let pts = trackPoints.filter((p) => isValidLatLng(p.lat, p.lng));
+  if (pts.length < 2) throw new Error("W pliku GPX nie ma śladu ani trasy (potrzebne są co najmniej 2 punkty).");
+  const first = pts[0], last = pts[pts.length - 1];
+  if (pts.length > GPX_MAX_POINTS) {
+    const stride = Math.ceil(pts.length / GPX_MAX_POINTS);
+    pts = pts.filter((_, i) => i % stride === 0 || i === pts.length - 1);
+  }
+  const coordinates = pts.map((p) => [p.lng, p.lat]);
+  const cum = buildCumulativeDistances(coordinates);
+  const total = cum[cum.length - 1];
+  if (!(total > 0)) throw new Error("Ślad GPX ma zerową długość — wszystkie punkty są w tym samym miejscu.");
+
+  const stops = namedPoints
+    .filter((p) => isValidLatLng(p.lat, p.lng))
+    .slice(0, maxStops)
+    .map((p) => {
+      let best = 0, bestDist = Infinity;
+      for (let i = 0; i < coordinates.length; i++) {
+        const d = haversineMeters(coordinates[i], [p.lng, p.lat]);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      return { name: String(p.name || "Punkt").trim().slice(0, 80) || "Punkt", lat: p.lat, lng: p.lng, frac: cum[best] / total };
+    })
+    .sort((a, b) => a.frac - b.frac);
+
+  const elapsed = Number.isFinite(first.time) && Number.isFinite(last.time) ? (last.time - first.time) / 1000 : null;
+  return {
+    route: {
+      coordinates,
+      distanceMeters: total,
+      durationSeconds: elapsed > 0 ? elapsed : null,
+      waypointFractions: [0, ...stops.map((s) => s.frac), 1],
+    },
+    waypoints: [
+      { name: "Start", lat: first.lat, lng: first.lng },
+      ...stops.map(({ name, lat, lng }) => ({ name, lat, lng })),
+      { name: "Meta", lat: last.lat, lng: last.lng },
+    ],
+  };
+}
+
+/* ---------- Link do trasy (punkty zakodowane w adresie, po znaku #) ---------- */
+const SHARED_ROUTE_MAX_WAYPOINTS = 60;
+const TRAVEL_MODES = ["driving", "cycling", "walking", "straight"];
+const WAYPOINT_KINDS = ["start", "finish", "empty"];
+
+function base64UrlEncode(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(encoded) {
+  const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+function encodeSharedRoute({ mode, waypoints, title }) {
+  const round = (v) => Math.round(v * 1e5) / 1e5;
+  const payload = {
+    v: 1,
+    m: mode,
+    w: waypoints.map((w) => [round(w.lat), round(w.lng), String(w.name ?? "").slice(0, 80), w.kind ?? ""]),
+  };
+  if (title) payload.t = String(title).slice(0, 80);
+  return base64UrlEncode(JSON.stringify(payload));
+}
+
+// Link może przyjść od kogokolwiek, więc każdą wartość sprawdzamy i przycinamy;
+// nazwy są dalej traktowane wyłącznie jako tekst (nigdy HTML).
+function decodeSharedRoute(encoded) {
+  const bad = () => new Error("Link do trasy jest uszkodzony albo niekompletny.");
+  let data;
+  try {
+    if (typeof encoded !== "string" || encoded.length > 20000) throw bad();
+    data = JSON.parse(base64UrlDecode(encoded));
+  } catch {
+    throw bad();
+  }
+  if (!data || data.v !== 1 || !Array.isArray(data.w)) throw bad();
+  if (data.w.length < 2 || data.w.length > SHARED_ROUTE_MAX_WAYPOINTS) throw bad();
+  const waypoints = data.w.map((item, i) => {
+    if (!Array.isArray(item)) throw bad();
+    const [lat, lng, name, kind] = item;
+    if (typeof lat !== "number" || typeof lng !== "number" || !isValidLatLng(lat, lng)) throw bad();
+    return {
+      lat,
+      lng,
+      name: (typeof name === "string" ? name : "").slice(0, 80) || `Punkt ${i + 1}`,
+      kind: WAYPOINT_KINDS.includes(kind) ? kind : null,
+    };
+  });
+  return {
+    mode: TRAVEL_MODES.includes(data.m) ? data.m : "driving",
+    waypoints,
+    title: typeof data.t === "string" ? data.t.slice(0, 80) : "",
+  };
+}
+
+/* ---------- Kamera podążająca za pojazdem ---------- */
+function smoothstep(x) {
+  const t = Math.max(0, Math.min(1, x));
+  return t * t * (3 - 2 * t);
+}
+
+// 0 = kadr z całą trasą, 1 = kamera na pojeździe. Płynne wejście po starcie
+// jazdy i płynny powrót do całej trasy tuż przed końcową klatką.
+function followCameraBlend(timeline, t, rampMs = 1400) {
+  const segs = timeline.segments;
+  const firstMoving = segs.find((s) => s.type !== "start");
+  const end = segs[segs.length - 1];
+  const rampIn = smoothstep((t - firstMoving.t0) / rampMs);
+  const rampOut = smoothstep((end.t0 - t) / rampMs);
+  return Math.max(0, Math.min(rampIn, rampOut));
+}
+
+// dzieli tekst na wiersze mieszczące się w zadanej szerokości; measure(text) -> px
+function wrapText(text, maxWidth, measure, maxLines = 3) {
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (!line || measure(candidate) <= maxWidth) {
+      line = candidate;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept[maxLines - 1] = kept[maxLines - 1].replace(/.{0,2}$/, "…");
+    return kept;
+  }
+  return lines;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseGoogleMapsLink, haversineMeters, buildCumulativeDistances, indexAtDistance,
@@ -369,5 +569,7 @@ if (typeof module !== "undefined" && module.exports) {
     formatPlaceLabel, parseDecimalInput, formatNum, escapeHtml, safeDecodeURIComponent,
     waypointFractionsFromLegs, monotonicWaypointFractions, buildTimeline, timelineStateAt,
     formatDuration, clampNumber, formatDecimalPl,
+    greatCirclePath, buildStraightRoute, buildGpxRoute, encodeSharedRoute, decodeSharedRoute,
+    smoothstep, followCameraBlend, wrapText, TRAVEL_MODES,
   };
 }

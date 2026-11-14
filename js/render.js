@@ -225,7 +225,51 @@ let wobbleAmplitude = 0;
 
 let waypointFeatures = []; // { lng, lat, name, kind, frac, media, thumbnailCanvas, tReveal, tSettle }
 
-const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
+// Style mapy. Każdy ma własną atrybucję, rysowaną na scenie (drawAttribution).
+// Satelita: mozaika Sentinel-2 cloudless (EOX, licencja CC BY 4.0) — bez klucza API.
+const OPENFREEMAP_ATTRIBUTION = "© OpenStreetMap · OpenMapTiles · OpenFreeMap";
+const MAP_STYLES = {
+  light: { label: "Jasna", style: "https://tiles.openfreemap.org/styles/positron", attribution: OPENFREEMAP_ATTRIBUTION, maxZoom: 14 },
+  color: { label: "Kolorowa", style: "https://tiles.openfreemap.org/styles/liberty", attribution: OPENFREEMAP_ATTRIBUTION, maxZoom: 14 },
+  dark: { label: "Ciemna", style: "https://tiles.openfreemap.org/styles/dark", attribution: OPENFREEMAP_ATTRIBUTION, maxZoom: 14 },
+  satellite: {
+    label: "Satelita",
+    style: {
+      version: 8,
+      sources: {
+        satellite: {
+          type: "raster",
+          tiles: ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg"],
+          tileSize: 256,
+          maxzoom: 13,
+        },
+      },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": "#0b1a2a" } },
+        { id: "satellite", type: "raster", source: "satellite" },
+      ],
+    },
+    attribution: "Sentinel-2 cloudless © EOX · Copernicus Sentinel 2016–2017",
+    maxZoom: 12,
+  },
+};
+let mapStyleKey = "light";
+
+// kamera: "full" = cała trasa w kadrze przez cały film, "follow" = podąża za pojazdem
+let cameraMode = "full";
+let customFraming = false; // użytkownik sam ustawił kadr (przesunął/przybliżył mapę)
+let framingMode = false; // mapa chwilowo odblokowana do ustawiania kadru
+const FOLLOW_ZOOM_BOOST = 2.6;
+
+// napisy w filmie
+let showCaptions = true;
+let videoTitle = "";
+let showSummary = true;
+const TITLE_HOLD_MS = 1900;
+const SUMMARY_HOLD_MS = 2800;
+
+// muzyka: { file, url, audioEl } albo null
+let musicEntry = null;
 const MAP_LOAD_TIMEOUT_MS = 25000;
 const MAX_ANIM_POINTS = 1500;
 const END_HOLD_MS = 700; // ostatnia klatka (cała trasa, bez pojazdu) zostaje chwilę na ekranie
@@ -405,7 +449,7 @@ function ensureMap(center) {
     try {
       m = new maplibregl.Map({
         container: "map",
-        style: MAP_STYLE_URL,
+        style: MAP_STYLES[mapStyleKey].style,
         center,
         zoom: 5,
         canvasContextAttributes: { preserveDrawingBuffer: true }, // kopiujemy canvas mapy na scenę (drawImage)
@@ -419,6 +463,8 @@ function ensureMap(center) {
         boxZoom: false,
         keyboard: false,
         pitchWithRotate: false,
+        maxPitch: 0,
+        fadeDuration: 0, // kafelki i etykiety pojawiają się od razu — ważne przy kamerze podążającej
       });
     } catch (e) {
       fail("Nie udało się uruchomić mapy — ta przeglądarka prawdopodobnie nie obsługuje WebGL.");
@@ -441,6 +487,8 @@ function ensureMap(center) {
       ensureStageCanvas();
       syncMapPixelRatio();
       m.on("render", onMapRender);
+      m.on("dragstart", markCustomFraming);
+      m.on("zoomstart", (e) => { if (e.originalEvent) markCustomFraming(); });
       resolve(m);
     });
   });
@@ -450,10 +498,68 @@ function ensureMap(center) {
 // Mapa przerysowuje się sama, gdy doczyta kafelki albo zmieni rozmiar — wtedy
 // odświeżamy to, co aktualnie pokazuje scena. W trakcie animacji scenę maluje
 // pętla animacji, więc tu nic nie robimy.
+let insideMapRender = false;
 function onMapRender() {
   updateMapSnapshot();
+  if (insideMapRender) return; // renderFrame sam wymusił to przerysowanie (ruch kamery)
+  insideMapRender = true;
+  try {
+    if (stageMode === "static") renderStatic();
+    else if (stageMode === "final" && lastTimeline) renderFrame(lastTimeline, lastTimeline.totalMs);
+  } finally {
+    insideMapRender = false;
+  }
+}
+
+// Zmienia styl mapy (jasna/ciemna/kolorowa/satelita). Linia trasy i znaczniki
+// są rysowane na scenie, więc po zmianie stylu nie trzeba nic dodawać do mapy.
+function applyMapStyle(key) {
+  if (!MAP_STYLES[key]) return Promise.resolve();
+  const previous = mapStyleKey;
+  mapStyleKey = key;
+  if (!map || key === previous) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      map.off("idle", onIdle);
+      mapStyleKey = previous;
+      map.setStyle(MAP_STYLES[previous].style);
+      reject(new Error("Nie udało się wczytać tego stylu mapy. Sprawdź połączenie z internetem i spróbuj ponownie."));
+    }, 20000);
+    const onIdle = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    map.once("idle", onIdle);
+    map.setStyle(MAP_STYLES[key].style);
+    map.setMaxZoom(MAP_STYLES[key].maxZoom + 4);
+  });
+}
+
+// Tryb ustawiania kadru: mapa daje się przesuwać i przybliżać palcem/myszą.
+// Scena (canvas nad mapą) przepuszcza wtedy dotyk do mapy, a podgląd odświeża
+// się przy każdym ruchu (onMapRender).
+function setFramingMode(on) {
+  framingMode = !!on;
+  if (!map) return;
+  const handlers = [map.dragPan, map.scrollZoom, map.touchZoomRotate, map.doubleClickZoom];
+  handlers.forEach((h) => (framingMode ? h.enable() : h.disable()));
+  if (framingMode) map.touchZoomRotate.disableRotation();
+  document.getElementById("stageCanvas").classList.toggle("pass-through", framingMode);
+}
+
+function markCustomFraming() {
+  if (framingMode) customFraming = true;
+}
+
+function resetFraming() {
+  customFraming = false;
+  fitToRoute();
   if (stageMode === "static") renderStatic();
-  else if (stageMode === "final" && lastTimeline) renderFrame(lastTimeline, lastTimeline.totalMs);
+}
+
+// dopasowuje kadr do trasy, chyba że użytkownik ustawił go sam
+function fitToRouteUnlessCustom() {
+  if (!customFraming) fitToRoute();
 }
 
 async function showRouteOnMap(route, waypoints) {
@@ -465,6 +571,8 @@ async function showRouteOnMap(route, waypoints) {
   document.getElementById("stageCanvas").style.display = "block";
   map.resize();
   syncMapPixelRatio();
+  customFraming = false; // nowa trasa = nowy kadr
+  prewarmedKey = "";
   fitToRoute();
   renderStatic();
 }
@@ -655,9 +763,8 @@ function drawDistanceCounter(km) {
 
 // Atrybucja danych mapy — wymagana licencją OpenStreetMap (ODbL) i OpenFreeMap.
 // Rysowana na scenie, więc jest widoczna i w podglądzie, i w każdej klatce wideo.
-const MAP_ATTRIBUTION_TEXT = "© OpenStreetMap · OpenMapTiles · OpenFreeMap";
-
 function drawAttribution() {
+  const MAP_ATTRIBUTION_TEXT = MAP_STYLES[mapStyleKey].attribution;
   stageCtx.save();
   stageCtx.font = "500 22px -apple-system, Roboto, sans-serif";
   stageCtx.textAlign = "right";
@@ -751,6 +858,130 @@ function drawPhotoReveal(waypoint, elapsedMs) {
   stageCtx.strokeStyle = "#ffffff";
   stageCtx.stroke();
   stageCtx.restore();
+  drawRevealCaption(waypoint, elapsedMs);
+}
+
+const CAPTION_FONT = "600 30px -apple-system, Roboto, sans-serif";
+
+function fillRoundRect(x, y, w, h, radius) {
+  stageCtx.beginPath();
+  if (stageCtx.roundRect) stageCtx.roundRect(x, y, w, h, radius);
+  else stageCtx.rect(x, y, w, h);
+  stageCtx.fill();
+}
+
+function shortenText(text, maxChars) {
+  const clean = String(text ?? "").trim();
+  return clean.length > maxChars ? clean.slice(0, maxChars - 1).trimEnd() + "…" : clean;
+}
+
+// Podpisy miejsc przy znacznikach. Podpis, który nachodziłby na wcześniej
+// narysowany albo wychodził poza kadr, jest pomijany — czytelność ważniejsza
+// niż komplet.
+function drawCaptions(t) {
+  if (!showCaptions) return;
+  const r = 12 * stageScale();
+  const placed = [];
+  stageCtx.save();
+  stageCtx.font = CAPTION_FONT;
+  stageCtx.textAlign = "left";
+  stageCtx.textBaseline = "middle";
+  waypointFeatures.forEach((w) => {
+    if (w.kind === "empty" || !w.name) return;
+    if (t !== null && t < w.tReveal) return;
+    const text = shortenText(w.name, 26);
+    if (!text) return;
+    const [x, y] = projectToStage(w.lng, w.lat);
+    if (x < 0 || x > STAGE_W || y < 0 || y > STAGE_H) return;
+    const boxW = stageCtx.measureText(text).width + 24, boxH = 44;
+    let bx = x + r + 10;
+    if (bx + boxW > STAGE_W - 8) bx = x - r - 10 - boxW;
+    const by = y - boxH / 2;
+    if (bx < 8 || by < 8 || by + boxH > STAGE_H - ATTRIB_AREA_H) return;
+    if (by < COUNTER_AREA_H - 40 && bx < 360) return; // nie zasłaniamy licznika km
+    const overlaps = placed.some((b) => bx < b.x + b.w + 6 && bx + boxW + 6 > b.x && by < b.y + b.h + 4 && by + boxH + 4 > b.y);
+    if (overlaps) return;
+    placed.push({ x: bx, y: by, w: boxW, h: boxH });
+    stageCtx.fillStyle = "rgba(255,255,255,0.92)";
+    fillRoundRect(bx, by, boxW, boxH, 10);
+    stageCtx.fillStyle = "#1b1f23";
+    stageCtx.fillText(text, bx + 12, y + 1);
+  });
+  stageCtx.restore();
+}
+
+// podpis miejsca na pełnoekranowym zdjęciu (tylko gdy zdjęcie wypełnia kadr)
+function drawRevealCaption(waypoint, elapsedMs) {
+  if (!showCaptions || !waypoint.name) return;
+  const fadeIn = (elapsedMs - REVEAL_GROW_MS * 0.7) / 300;
+  const fadeOut = (REVEAL_GROW_MS + REVEAL_HOLD_MS - elapsedMs) / 200;
+  const alpha = Math.max(0, Math.min(1, fadeIn, fadeOut));
+  if (alpha <= 0) return;
+  const text = shortenText(waypoint.name, 34);
+  stageCtx.save();
+  stageCtx.globalAlpha = alpha;
+  stageCtx.font = "700 46px -apple-system, Roboto, sans-serif";
+  stageCtx.textAlign = "center";
+  stageCtx.textBaseline = "middle";
+  const boxW = Math.min(stageCtx.measureText(text).width + 60, STAGE_W - 60), boxH = 84;
+  const cy = STAGE_H - 220;
+  stageCtx.fillStyle = "rgba(27,31,35,0.72)";
+  fillRoundRect((STAGE_W - boxW) / 2, cy - boxH / 2, boxW, boxH, 18);
+  stageCtx.fillStyle = "#ffffff";
+  stageCtx.fillText(text, STAGE_W / 2, cy + 2, boxW - 40);
+  stageCtx.restore();
+}
+
+// plansza tytułowa na początku filmu: przyciemniona mapa z całą trasą + tytuł
+function drawTitleCard(elapsedMs) {
+  const alpha = Math.max(0, Math.min(1, (TITLE_HOLD_MS - elapsedMs) / 450));
+  if (alpha <= 0 || !videoTitle) return;
+  stageCtx.save();
+  stageCtx.globalAlpha = alpha;
+  stageCtx.fillStyle = "rgba(27,31,35,0.6)";
+  stageCtx.fillRect(0, 0, STAGE_W, STAGE_H);
+  stageCtx.fillStyle = "#ffffff";
+  stageCtx.textAlign = "center";
+  stageCtx.textBaseline = "middle";
+  stageCtx.font = "800 84px -apple-system, Roboto, sans-serif";
+  const lines = wrapText(videoTitle, STAGE_W - 140, (txt) => stageCtx.measureText(txt).width, 3);
+  const lineH = 100;
+  lines.forEach((line, i) => {
+    stageCtx.fillText(line, STAGE_W / 2, STAGE_H / 2 + (i - (lines.length - 1) / 2) * lineH, STAGE_W - 100);
+  });
+  stageCtx.restore();
+}
+
+// podsumowanie na końcu: dystans, liczba przystanków, tytuł
+function drawSummaryCard(elapsedMs) {
+  const alpha = Math.max(0, Math.min(1, (elapsedMs - 250) / 450));
+  if (alpha <= 0) return;
+  const km = currentRoute.distanceMeters / 1000;
+  const stops = waypointFeatures.filter((w) => w.kind !== "empty").length - 2;
+  const lines = [];
+  if (videoTitle) lines.push({ text: shortenText(videoTitle, 40), font: "700 52px -apple-system, Roboto, sans-serif", h: 76 });
+  lines.push({ text: `${km >= 100 ? km.toFixed(0) : km.toFixed(1).replace(".", ",")} km`, font: "800 120px -apple-system, Roboto, sans-serif", h: 140 });
+  if (stops > 0) {
+    const noun = stops === 1 ? "przystanek" : stops < 5 ? "przystanki" : "przystanków";
+    lines.push({ text: `${stops} ${noun} po drodze`, font: "600 44px -apple-system, Roboto, sans-serif", h: 70 });
+  }
+  const boxH = lines.reduce((sum, l) => sum + l.h, 0) + 70;
+  const boxW = STAGE_W - 120;
+  const top = STAGE_H / 2 - boxH / 2;
+  stageCtx.save();
+  stageCtx.globalAlpha = alpha;
+  stageCtx.fillStyle = "rgba(27,31,35,0.82)";
+  fillRoundRect((STAGE_W - boxW) / 2, top, boxW, boxH, 28);
+  stageCtx.fillStyle = "#ffffff";
+  stageCtx.textAlign = "center";
+  stageCtx.textBaseline = "middle";
+  let y = top + 35;
+  lines.forEach((l) => {
+    stageCtx.font = l.font;
+    stageCtx.fillText(l.text, STAGE_W / 2, y + l.h / 2, boxW - 60);
+    y += l.h;
+  });
+  stageCtx.restore();
 }
 
 // podgląd statyczny (krok 2): cała trasa + wszystkie przystanki z numerami
@@ -759,6 +990,7 @@ function renderStatic() {
   compositeMapToStage();
   strokeRoute(null);
   drawWaypointMarkers(null);
+  drawCaptions(null);
   drawAttribution();
 }
 
@@ -776,8 +1008,17 @@ function buildAnimationPlan() {
     travelMs: selectedDuration * 1000,
     stops,
     revealMs: revealTotalMs(),
-    endHoldMs: END_HOLD_MS,
+    startHoldMs: videoTitle ? TITLE_HOLD_MS : 0,
+    endHoldMs: showSummary ? SUMMARY_HOLD_MS : END_HOLD_MS,
   });
+  // kadr wyjściowy (cała trasa albo ustawiony ręcznie) — do niego kamera wraca
+  const center = map.getCenter();
+  timeline.baseCamera = { center: [center.lng, center.lat], zoom: map.getZoom() };
+  timeline.cameraMode = cameraMode;
+  timeline.followZoom = Math.max(
+    timeline.baseCamera.zoom,
+    Math.min(timeline.baseCamera.zoom + FOLLOW_ZOOM_BOOST, MAP_STYLES[mapStyleKey].maxZoom)
+  );
   waypointFeatures.forEach((w, i) => {
     w.tReveal = timeline.marks[i].tReveal;
     w.tSettle = timeline.marks[i].tSettle;
@@ -791,54 +1032,187 @@ function buildAnimationPlan() {
 function renderFrame(timeline, t) {
   const state = timelineStateAt(timeline, t);
   const route = currentRoute;
+  applyCamera(timeline, t, state);
   compositeMapToStage();
-  strokeRoute(state.dist);
-  if (state.type !== "end") {
+  // plansza tytułowa pokazuje całą trasę; potem linia rośnie razem z jazdą
+  strokeRoute(state.type === "start" ? null : state.dist);
+  if (state.type !== "end" && state.type !== "start") {
     const [lng, lat] = positionAtDistance(route.animCoords, route.animCum, state.dist);
     const wobble = Math.sin((t / 1000) * WOBBLE_FREQUENCY) * wobbleAmplitude;
     drawMotoMarker(lng, lat, headingForDistance(state.dist) + wobble);
   }
-  drawWaypointMarkers(t);
+  drawWaypointMarkers(state.type === "start" ? null : t);
+  if (state.type !== "start") drawCaptions(t);
   // licznik pokazuje realny dystans drogowy z routera, nie długość uproszczonej geometrii
   const fraction = route.animTotal > 0 ? state.dist / route.animTotal : 1;
   drawDistanceCounter((fraction * route.distanceMeters) / 1000);
   drawAttribution();
   if (state.type === "reveal") drawPhotoReveal(waypointFeatures[state.stopIndex], state.elapsed);
+  if (state.type === "start") drawTitleCard(state.elapsed);
+  if (state.type === "end" && showSummary) drawSummaryCard(state.elapsed);
   return state;
+}
+
+// Ustawia kamerę mapy dla chwili t. W trybie "cała trasa" to zawsze kadr
+// wyjściowy; w trybie "podążaj" — płynne przejście między kadrem wyjściowym
+// a zbliżeniem na pojazd (followCameraBlend).
+function applyCamera(timeline, t, state) {
+  const base = timeline.baseCamera;
+  let center = base.center, zoom = base.zoom;
+  if (timeline.cameraMode === "follow") {
+    const k = followCameraBlend(timeline, t);
+    if (k > 0) {
+      const pos = positionAtDistance(currentRoute.animCoords, currentRoute.animCum, state.dist);
+      center = [base.center[0] + (pos[0] - base.center[0]) * k, base.center[1] + (pos[1] - base.center[1]) * k];
+      zoom = base.zoom + (timeline.followZoom - base.zoom) * k;
+    }
+  }
+  setCamera(center, zoom);
+}
+
+function setCamera(center, zoom) {
+  const c = map.getCenter();
+  if (Math.abs(c.lng - center[0]) < 1e-9 && Math.abs(c.lat - center[1]) < 1e-9 && Math.abs(map.getZoom() - zoom) < 1e-6) return;
+  const wasInside = insideMapRender;
+  insideMapRender = true; // przerysowanie wywołane stąd ma tylko odświeżyć kopię mapy
+  try {
+    map.jumpTo({ center, zoom });
+    map.redraw(); // synchronicznie — klatka sceny i tło mapy muszą pochodzić z tej samej kamery
+  } finally {
+    insideMapRender = wasInside;
+  }
+}
+
+function waitForMapIdle(timeoutMs) {
+  return new Promise((resolve) => {
+    if (map.loaded() && map.areTilesLoaded()) return resolve(true);
+    const timer = setTimeout(() => { map.off("idle", done); resolve(false); }, timeoutMs);
+    const done = () => { clearTimeout(timer); resolve(true); };
+    map.once("idle", done);
+  });
+}
+
+// Kamera podążająca potrzebuje kafelków w dużym przybliżeniu wzdłuż całej
+// trasy. Wczytujemy je PRZED animacją, żeby w trakcie nie wyskakiwały puste pola.
+let prewarmedKey = "";
+async function prewarmFollowTiles(timeline, isCancelled, onProgress) {
+  const key = [currentRoute.version, mapStyleKey, timeline.followZoom.toFixed(2), STAGE_W, STAGE_H].join("|");
+  if (prewarmedKey === key) return;
+  const samples = 24;
+  for (let i = 0; i < samples; i++) {
+    if (isCancelled()) return;
+    const dist = (i / (samples - 1)) * currentRoute.animTotal;
+    const pos = positionAtDistance(currentRoute.animCoords, currentRoute.animCum, dist);
+    map.jumpTo({ center: pos, zoom: timeline.followZoom });
+    await waitForMapIdle(2500);
+    if (onProgress) onProgress((i + 1) / samples);
+  }
+  map.jumpTo({ center: timeline.baseCamera.center, zoom: timeline.baseCamera.zoom });
+  await waitForMapIdle(2500);
+  if (!isCancelled()) prewarmedKey = key;
 }
 
 // Długość gotowego filmu w ms dla bieżących ustawień: jazda + pokazy zdjęć + końcowa klatka.
 function estimateVideoDuration() {
   const reveals = waypointFeatures.filter((w) => w.media && w.kind !== "empty").length;
   const travelMs = selectedDuration * 1000;
-  return { travelMs, reveals, revealMs: revealTotalMs(), totalMs: travelMs + reveals * revealTotalMs() + END_HOLD_MS };
+  const introMs = videoTitle ? TITLE_HOLD_MS : 0;
+  const outroMs = showSummary ? SUMMARY_HOLD_MS : END_HOLD_MS;
+  return { travelMs, reveals, revealMs: revealTotalMs(), introMs, outroMs, totalMs: introMs + travelMs + reveals * revealTotalMs() + outroMs };
 }
 
 function cancelPlayback() {
   activePlayback?.cancel();
 }
 
+/* ---------- Muzyka ---------- */
+// Dźwięk idzie przez Web Audio: do głośników (podgląd) i do osobnego wyjścia,
+// które przy nagrywaniu trafia do pliku razem z obrazem.
+let audioCtx = null, musicGain = null, musicRecordDest = null;
+
+function setMusicFile(file) {
+  clearMusic();
+  if (!file) return;
+  const audioEl = new Audio();
+  audioEl.loop = true; // muzyka krótsza niż film zaczyna się od nowa
+  audioEl.preload = "auto";
+  const url = URL.createObjectURL(file);
+  audioEl.src = url;
+  musicEntry = { file, url, audioEl, source: null };
+}
+
+function clearMusic() {
+  if (!musicEntry) return;
+  musicEntry.audioEl.pause();
+  try { musicEntry.source?.disconnect(); } catch { /* już rozłączone */ }
+  URL.revokeObjectURL(musicEntry.url);
+  musicEntry = null;
+}
+
+function ensureMusicGraph() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx || !musicEntry) return false;
+  if (!audioCtx) {
+    audioCtx = new Ctx();
+    musicGain = audioCtx.createGain();
+    musicRecordDest = audioCtx.createMediaStreamDestination();
+    musicGain.connect(audioCtx.destination);
+    musicGain.connect(musicRecordDest);
+  }
+  if (!musicEntry.source) {
+    musicEntry.source = audioCtx.createMediaElementSource(musicEntry.audioEl);
+    musicEntry.source.connect(musicGain);
+  }
+  return true;
+}
+
+function startMusic(totalMs) {
+  if (!musicEntry) return;
+  const audioEl = musicEntry.audioEl;
+  if (ensureMusicGraph()) {
+    audioCtx.resume().catch(() => {});
+    const now = audioCtx.currentTime, end = now + totalMs / 1000;
+    musicGain.gain.cancelScheduledValues(now);
+    musicGain.gain.setValueAtTime(1, now);
+    musicGain.gain.setValueAtTime(1, Math.max(now, end - 1.2));
+    musicGain.gain.linearRampToValueAtTime(0, end); // wyciszenie na końcu filmu
+  }
+  audioEl.currentTime = 0;
+  audioEl.play().catch(() => {}); // brak zgody na dźwięk — film powstanie bez muzyki w podglądzie
+}
+
+function stopMusic() {
+  if (!musicEntry) return;
+  musicEntry.audioEl.pause();
+  if (audioCtx && musicGain) musicGain.gain.cancelScheduledValues(audioCtx.currentTime);
+}
+
 // Odtwarza animację w czasie rzeczywistym. Zwraca "done" albo "cancelled".
-function playTimeline({ onProgress } = {}) {
+function playTimeline({ onProgress, onPreparing, onStart } = {}) {
   if (animationRunning) return Promise.resolve("busy");
   if (!map || !currentRoute) return Promise.reject(new Error("Najpierw zbuduj trasę."));
   animationRunning = true;
-  stageMode = "anim";
+  setFramingMode(false);
   ensureStageCanvas();
   document.getElementById("stageCanvas").style.display = "block";
 
-  return loadAllActivityIcons().then(() => new Promise((resolve, reject) => {
-    let timeline;
-    try {
-      timeline = buildAnimationPlan();
-    } catch (e) {
-      animationRunning = false;
-      stageMode = "static";
-      reject(e);
-      return;
+  let finished = false;
+  let cancelRequested = false;
+  let cancelNow = () => { cancelRequested = true; };
+  activePlayback = { cancel: () => cancelNow() };
+
+  const prepare = async () => {
+    await loadAllActivityIcons();
+    const timeline = buildAnimationPlan(); // kadr wyjściowy czytany, zanim cokolwiek ruszy kamerą
+    stageMode = "anim";
+    if (timeline.cameraMode === "follow") {
+      await prewarmFollowTiles(timeline, () => cancelRequested, onPreparing);
     }
+    return timeline;
+  };
+
+  return prepare().then((timeline) => new Promise((resolve, reject) => {
     lastTimeline = timeline;
-    let finished = false;
     let startTime = null;
     let activeVideo = null;
 
@@ -846,12 +1220,14 @@ function playTimeline({ onProgress } = {}) {
       if (finished) return;
       finished = true;
       if (activeVideo) activeVideo.pause();
+      stopMusic();
       animationRunning = false;
       activePlayback = null;
       if (result === "done") {
         stageMode = "final";
       } else {
         stageMode = "static";
+        setCamera(timeline.baseCamera.center, timeline.baseCamera.zoom);
         renderStatic();
       }
       if (error) reject(error); else resolve(result);
@@ -859,7 +1235,10 @@ function playTimeline({ onProgress } = {}) {
 
     // przerwanie działa natychmiast, a nie dopiero przy następnej klatce — przeglądarka
     // potrafi wstrzymać klatki na dłuższą chwilę (np. przy starcie kodera wideo)
-    activePlayback = { cancel: () => finish("cancelled") };
+    cancelNow = () => finish("cancelled");
+    if (cancelRequested) return finish("cancelled");
+    startMusic(timeline.totalMs);
+    if (onStart) onStart(); // nagrywanie rusza dopiero tutaj — bez etapu wczytywania mapy
 
     function frame(now) {
       if (finished) return;
@@ -889,19 +1268,33 @@ function playTimeline({ onProgress } = {}) {
       }
     }
     requestAnimationFrame(frame);
-  }));
+  })).catch((error) => {
+    animationRunning = false;
+    activePlayback = null;
+    stageMode = "static";
+    throw error;
+  });
 }
 
 /* ---------- 6) Eksport wideo (Canvas.captureStream + MediaRecorder, bez backendu) ---------- */
-function pickSupportedMimeType() {
+function pickSupportedMimeType(withAudio = false) {
   // Safari/iOS nagrywa natywnie MP4, Chrome/Android — MP4 (nowsze wersje) albo WebM
-  const candidates = [
-    "video/mp4;codecs=avc1",
-    "video/mp4",
-    "video/webm;codecs=vp9",
-    "video/webm;codecs=vp8",
-    "video/webm",
-  ];
+  const candidates = withAudio
+    ? [
+        "video/mp4;codecs=avc1,mp4a.40.2",
+        "video/mp4;codecs=avc1,opus",
+        "video/mp4",
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+      ]
+    : [
+        "video/mp4;codecs=avc1",
+        "video/mp4",
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+      ];
   for (const type of candidates) {
     if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
   }
@@ -909,17 +1302,21 @@ function pickSupportedMimeType() {
 }
 
 // Nagrywa animację do pliku. Zwraca { cancelled: true } albo { blob, mimeType, ext }.
-async function recordVideo(onProgress) {
+async function recordVideo(onProgress, onPreparing) {
   if (!map || !currentRoute) throw new Error("Najpierw zbuduj trasę.");
   if (animationRunning) throw new Error("Poczekaj, aż skończy się bieżąca animacja.");
   if (!window.MediaRecorder) {
     throw new Error("Ta przeglądarka nie obsługuje nagrywania wideo (MediaRecorder API).");
   }
-  const mimeType = pickSupportedMimeType();
+  const withAudio = !!musicEntry && ensureMusicGraph();
+  const mimeType = pickSupportedMimeType(withAudio);
   if (!mimeType) throw new Error("Nie znalazłem obsługiwanego formatu wideo na tym urządzeniu.");
 
   ensureStageCanvas();
-  const stream = stageCanvas.captureStream(30);
+  const canvasStream = stageCanvas.captureStream(30);
+  const stream = withAudio
+    ? new MediaStream([...canvasStream.getVideoTracks(), ...musicRecordDest.stream.getAudioTracks()])
+    : canvasStream;
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
   const chunks = [];
   recorder.ondataavailable = (e) => {
@@ -940,16 +1337,24 @@ async function recordVideo(onProgress) {
   document.addEventListener("visibilitychange", onVisibility);
 
   let result;
-  recorder.start();
+  let recorderStarted = false;
   try {
-    result = await playTimeline({ onProgress });
+    result = await playTimeline({
+      onProgress,
+      onPreparing,
+      onStart: () => {
+        recorder.start();
+        recorderStarted = true;
+      },
+    });
   } finally {
     document.removeEventListener("visibilitychange", onVisibility);
     if (recorder.state !== "inactive") recorder.stop();
+    if (!recorderStarted) result = result === "done" ? "error" : result; // nic nie nagrano
     // przy udanym nagraniu czekamy na komplet danych; przy przerwanym i tak je
     // wyrzucamy, więc nie pozwalamy, by ociągający się koder blokował interfejs
-    await (result === "done" ? stopped : Promise.race([stopped, new Promise((r) => setTimeout(r, 1500))]));
-    stream.getTracks().forEach((track) => track.stop());
+    if (recorderStarted) await (result === "done" ? stopped : Promise.race([stopped, new Promise((r) => setTimeout(r, 1500))]));
+    canvasStream.getTracks().forEach((track) => track.stop());
   }
 
   if (result !== "done") {
@@ -964,7 +1369,7 @@ async function recordVideo(onProgress) {
 
   const blob = new Blob(chunks, { type: mimeType });
   if (blob.size === 0) throw new Error("Nagranie jest puste — przeglądarka nie zapisała żadnych danych wideo.");
-  return { blob, mimeType, ext: mimeType.includes("mp4") ? "mp4" : "webm", cancelled: false };
+  return { blob, mimeType, ext: mimeType.includes("mp4") ? "mp4" : "webm", cancelled: false, hasAudio: withAudio };
 }
 
 function downloadBlob(blob, filename) {

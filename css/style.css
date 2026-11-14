@@ -313,3 +313,30 @@ button:disabled { opacity: 0.5; }
   display: block; width: 100%; max-width: 260px; margin: 0 auto 8px;
   border-radius: 8px; background: #000;
 }
+
+/* ---------- pola formularzy ---------- */
+.select, .text-input {
+  width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 0.95rem; background: #fff; color: var(--ink);
+}
+.field { margin-bottom: 12px; }
+.field label, .field-label { display: block; font-size: 0.82rem; color: #5b5f63; margin-bottom: 4px; }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.92rem; }
+.check input { width: 20px; height: 20px; flex-shrink: 0; }
+.tab-btn { padding: 10px 4px; }
+
+/* ---------- lista punktów z edytowalnymi nazwami ---------- */
+.wp-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.wp-row .num { width: 22px; color: #5b5f63; flex-shrink: 0; }
+.wp-name { flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.92rem; }
+.wp-note { flex: 1; color: #5b5f63; font-size: 0.85rem; }
+.wp-coords { flex-shrink: 0; font-size: 0.75rem; color: #5b5f63; }
+
+/* ---------- kadrowanie: scena przepuszcza dotyk do mapy ---------- */
+#stageCanvas.pass-through { pointer-events: none; }
+#mapWrap.framing { outline: 3px solid var(--route); outline-offset: 2px; border-radius: 8px; }
+
+.resume-card { border-color: var(--accent); margin: 0 0 12px; }
+.resume-card .sub { margin-bottom: 8px; }
+.share-link-output { width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.8rem; }
+#shareLinkInfo, #musicInfo, #gpxInfo { margin: 8px 0 0; }
