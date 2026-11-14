@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!--
   Content-Security-Policy: skrypty wyłącznie z tego samego originu (biblioteki są
-  w katalogu vendor/, nie na CDN), połączenia sieciowe tylko do trzech usług,
-  z których aplikacja faktycznie korzysta. 'unsafe-inline' dotyczy wyłącznie
+  w katalogu vendor/, nie na CDN), połączenia sieciowe tylko do usług,
+  z których aplikacja faktycznie korzysta (mapy, wyznaczanie tras, wyszukiwarka miejsc). 'unsafe-inline' dotyczy wyłącznie
   stylów (atrybuty style="" w znacznikach), nigdy skryptów.
   worker-src blob: jest wymagane przez MapLibre (web worker tworzony z Bloba).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' https://tiles.openfreemap.org https://router.project-osrm.org https://photon.komoot.io; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' https://tiles.openfreemap.org https://tiles.maps.eox.at https://router.project-osrm.org https://routing.openstreetmap.de https://photon.komoot.io; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
 <meta name="referrer" content="no-referrer" />
 <title>Moto Route — film z trasy na mapie</title>
 <meta name="description" content="Zamień trasę z Google Maps albo zdjęcia z telefonu w animowany film z przejazdu na mapie — gotowy na Stories, Reels i TikToka. Działa w przeglądarce, bez instalacji i bez konta." />
@@ -20,6 +20,8 @@
 <meta property="og:description" content="Wklej trasę z Google Maps albo wgraj zdjęcia z wyjazdu i pobierz animowany film z przejazdu na mapie." />
 <meta property="og:locale" content="pl_PL" />
 <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
 <link href="vendor/maplibre-gl.css" rel="stylesheet" />
 <link href="css/style.css" rel="stylesheet" />
 </head>
@@ -48,7 +50,27 @@
 
   <div class="source-tabs" role="tablist" aria-label="Źródło trasy">
     <button type="button" class="tab-btn active" data-tab="link" role="tab" aria-selected="true">Link Google Maps</button>
-    <button type="button" class="tab-btn" data-tab="photos" role="tab" aria-selected="false">Zdjęcia/filmy z telefonu</button>
+    <button type="button" class="tab-btn" data-tab="photos" role="tab" aria-selected="false">Zdjęcia/filmy</button>
+    <button type="button" class="tab-btn" data-tab="gpx" role="tab" aria-selected="false">Plik GPX</button>
+  </div>
+
+  <div id="resumeCard" class="card resume-card" style="display:none">
+    <h2>Zapisany projekt</h2>
+    <p id="resumeInfo" class="sub"></p>
+    <div class="nav-row">
+      <button type="button" id="resumeBtn">Wznów</button>
+      <button type="button" id="resumeDeleteBtn" class="secondary-btn">Usuń</button>
+    </div>
+  </div>
+
+  <div id="travelModeCard" class="field">
+    <label for="travelModeSelect">Sposób podróży</label>
+    <select id="travelModeSelect" class="select">
+      <option value="driving" selected>Drogami — samochód, motocykl</option>
+      <option value="cycling">Rowerem — drogi i ścieżki rowerowe</option>
+      <option value="walking">Pieszo — chodniki i szlaki</option>
+      <option value="straight">W linii prostej — samolot, kajak, prom</option>
+    </select>
   </div>
 
   <div id="sourceLink" class="source-panel">
@@ -74,16 +96,25 @@
     <button id="step1PhotosNextBtn" disabled>Dalej: Zbuduj trasę →</button>
   </div>
 
+  <div id="sourceGpx" class="source-panel" style="display:none">
+    <p class="sub">Wgraj ślad GPX nagrany np. nawigacją, zegarkiem albo aplikacją (Strava, Komoot, Garmin). Film pokaże dokładnie przejechaną trasę; nazwane punkty z pliku staną się przystankami.</p>
+    <input type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" id="gpxInput" style="display:none">
+    <button type="button" id="gpxPickBtn" class="secondary-btn">Wybierz plik GPX</button>
+    <p id="gpxInfo" class="sub" role="status"></p>
+    <button id="step1GpxNextBtn" disabled>Dalej: Pokaż trasę →</button>
+  </div>
+
   <details class="privacy-note">
     <summary>Prywatność: co opuszcza to urządzenie</summary>
     <p>Zdjęcia i filmy <strong>nie są nigdzie wysyłane</strong> — są przetwarzane wyłącznie w tej przeglądarce, a wideo powstaje lokalnie.</p>
     <p>Do zewnętrznych usług trafiają tylko dane potrzebne do zbudowania trasy:</p>
     <ul>
-      <li><strong>współrzędne punktów trasy</strong> (w tym lokalizacje odczytane ze zdjęć) — do serwera wyznaczania tras OSRM (router.project-osrm.org),</li>
-      <li><strong>wpisywane nazwy miejsc</strong> — do wyszukiwarki Photon (photon.komoot.io),</li>
-      <li><strong>oglądany fragment mapy</strong> — do serwera kafelków OpenFreeMap (tiles.openfreemap.org).</li>
+      <li><strong>współrzędne punktów trasy</strong> (w tym lokalizacje odczytane ze zdjęć) — do serwera wyznaczania tras OSRM (router.project-osrm.org; dla roweru i pieszo: routing.openstreetmap.de). Trasa „w linii prostej” i ślad GPX są liczone lokalnie,</li>
+      <li><strong>wpisywane nazwy miejsc oraz współrzędne zdjęć</strong> (żeby podpisać je nazwą miejscowości) — do wyszukiwarki Photon (photon.komoot.io),</li>
+      <li><strong>oglądany fragment mapy</strong> — do serwera kafelków OpenFreeMap (tiles.openfreemap.org), a przy stylu „Satelita” do EOX (tiles.maps.eox.at).</li>
     </ul>
-    <p>W pamięci tej przeglądarki zapisywane są ustawienia oraz — żeby nie wpisywać ich ponownie — lokalizacje przypisane do plików (nazwa i rozmiar pliku, współrzędne). Wpisy starsze niż 90 dni są usuwane automatycznie.</p>
+    <p>W pamięci tej przeglądarki zapisywane są ustawienia, lokalizacje przypisane do plików (nazwa i rozmiar pliku, współrzędne; wpisy starsze niż 90 dni są usuwane automatycznie) oraz <strong>ostatni projekt</strong> — trasa razem z dołączonymi zdjęciami, filmami i muzyką — żeby dało się go wznowić po zamknięciu strony. Te dane nie opuszczają urządzenia.</p>
+    <p>„Link do trasy” zawiera punkty trasy w samym adresie — trafia tylko do osób, którym go wyślesz.</p>
     <button type="button" id="clearStoredDataBtn" class="secondary-btn">Usuń dane zapisane w tej przeglądarce</button>
     <p id="clearStoredDataInfo" class="privacy-info" role="status"></p>
   </details>
@@ -97,15 +128,56 @@
   </div>
   <div id="routeCard" class="card">
     <h2>Trasa</h2>
-    <div class="stat"><span>Dystans drogowy</span><strong id="statDist">—</strong></div>
-    <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
+    <div class="stat"><span id="statDistLabel">Dystans</span><strong id="statDist">—</strong></div>
+    <div class="stat"><span id="statDurLabel">Szac. czas podróży</span><strong id="statDur">—</strong></div>
   </div>
 
-  <button type="button" class="options-toggle" data-target="opts2" aria-expanded="false">⚙ Opcje (zdjęcia, ikona, kolor, format) ▾</button>
+  <div class="card">
+    <h2>Kadr mapy</h2>
+    <div class="nav-row">
+      <button type="button" id="framingBtn" class="secondary-btn" aria-pressed="false">Ustaw kadr ręcznie</button>
+      <button type="button" id="framingResetBtn" class="secondary-btn">Dopasuj do trasy</button>
+    </div>
+    <p id="framingHint" class="sub" style="display:none">Przesuwaj i przybliżaj mapę poniżej. Gdy kadr będzie dobry, wybierz „Gotowe”.</p>
+  </div>
+
+  <div id="shareLinkCard" class="card">
+    <h2>Link do trasy</h2>
+    <button type="button" id="shareLinkBtn" class="secondary-btn">Kopiuj link do tej trasy</button>
+    <input type="text" id="shareLinkOutput" class="share-link-output" readonly style="display:none" aria-label="Link do trasy">
+    <p id="shareLinkInfo" class="sub" role="status">Link zawiera punkty trasy i ich nazwy (bez zdjęć). Kto go otworzy, zobaczy tę samą trasę.</p>
+  </div>
+
+  <button type="button" class="options-toggle" data-target="opts2" aria-expanded="false">⚙ Opcje (zdjęcia, napisy, mapa, muzyka, format) ▾</button>
   <div id="opts2" class="options-panel" style="display:none">
     <div id="photosCard" class="card">
       <h2>Zdjęcia/filmy na przystankach (opcjonalnie)</h2>
       <div id="photosList"></div>
+    </div>
+    <div class="card">
+      <h2>Napisy w filmie</h2>
+      <label class="field-label" for="titleInput">Tytuł (plansza na początku, opcjonalnie)</label>
+      <input type="text" id="titleInput" class="text-input" maxlength="80" placeholder="np. Tatry 2026" autocomplete="off">
+      <label class="check"><input type="checkbox" id="captionsCheck" checked> Podpisy miejsc przy przystankach</label>
+      <label class="check"><input type="checkbox" id="summaryCheck" checked> Podsumowanie na końcu (dystans, przystanki)</label>
+    </div>
+    <div class="card">
+      <h2>Styl mapy</h2>
+      <select id="mapStyleSelect" class="select" aria-label="Styl mapy">
+        <option value="light" selected>Jasna</option>
+        <option value="color">Kolorowa</option>
+        <option value="dark">Ciemna</option>
+        <option value="satellite">Satelita</option>
+      </select>
+    </div>
+    <div class="card">
+      <h2>Muzyka (opcjonalnie)</h2>
+      <input type="file" accept="audio/*" id="musicInput" style="display:none">
+      <div class="nav-row">
+        <button type="button" id="musicPickBtn" class="secondary-btn">Wybierz plik z muzyką</button>
+        <button type="button" id="musicRemoveBtn" class="secondary-btn" style="display:none">Usuń muzykę</button>
+      </div>
+      <p id="musicInfo" class="sub" role="status">Muzyka zostanie dograna do filmu i wyciszona na końcu. Użyj utworu, do którego masz prawa.</p>
     </div>
     <div class="card">
       <h2>Ikona</h2>
@@ -118,7 +190,7 @@
     </div>
     <div class="card">
       <h2>Proporcje wideo</h2>
-      <select id="ratioSelect" aria-label="Proporcje wideo" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+      <select id="ratioSelect" class="select" aria-label="Proporcje wideo">
         <option value="9:16" selected>9:16 — Stories / Reels / TikTok</option>
         <option value="1:1">1:1 — kwadrat</option>
         <option value="2:3">2:3 — portret</option>
@@ -139,8 +211,15 @@
   <button id="playAnimBtn">▶ Odtwórz animację</button>
   <p class="duration-info sub" aria-live="polite"></p>
 
-  <button type="button" class="options-toggle" data-target="opts3" aria-expanded="false">⚙ Opcje (prędkość, nerwowość, rozmiar) ▾</button>
+  <button type="button" class="options-toggle" data-target="opts3" aria-expanded="false">⚙ Opcje (kamera, prędkość, rozmiar) ▾</button>
   <div id="opts3" class="options-panel" style="display:none">
+    <div class="card">
+      <h2>Kamera</h2>
+      <select id="cameraSelect" class="select" aria-label="Tryb kamery">
+        <option value="full" selected>Cała trasa w kadrze</option>
+        <option value="follow">Podąża za pojazdem (zbliżenie)</option>
+      </select>
+    </div>
     <div class="card">
       <h2>Prędkość posuwania znacznika <span class="reset-default" data-reset="speed" title="Przywróć wartość domyślną">(domyślnie: 1)</span></h2>
       <div class="combo-control">
@@ -214,5 +293,6 @@
 <script src="js/core.js"></script>
 <script src="js/render.js"></script>
 <script src="js/app.js"></script>
+<script src="js/features.js"></script>
 </body>
 </html>

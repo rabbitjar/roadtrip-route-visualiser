@@ -1,7 +1,13 @@
 "use strict";
 
-/* ---------- 2) Realny routing (OSRM demo) ---------- */
-const OSRM_DEMO_BASE = "https://router.project-osrm.org/route/v1/driving";
+/* ---------- 2) Wyznaczanie trasy ---------- */
+// Publiczne serwery OSRM: demo projektu OSRM (samochód) oraz instancje FOSSGIS
+// (rower, pieszo). Tryb "straight" nie korzysta z sieci — liczony jest lokalnie.
+const ROUTING_ENDPOINTS = {
+  driving: "https://router.project-osrm.org/route/v1/driving",
+  cycling: "https://routing.openstreetmap.de/routed-bike/route/v1/driving",
+  walking: "https://routing.openstreetmap.de/routed-foot/route/v1/driving",
+};
 const ROUTING_TIMEOUT_MS = 20000;
 const ROUTING_MAX_ATTEMPTS = 3;
 
@@ -24,10 +30,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Pobiera trasę drogową. Ponawia przy błędach PRZEJŚCIOWYCH: brak połączenia,
 // przekroczony czas, HTTP 429 (limit zapytań) i 5xx (przeciążony serwer).
 // Błędy 4xx oznaczają złe dane wejściowe — ponawianie nic by nie dało.
-async function fetchRoadRoute(waypoints) {
+async function fetchRoadRoute(waypoints, mode = "driving") {
   validateWaypoints(waypoints);
+  const base = ROUTING_ENDPOINTS[mode] ?? ROUTING_ENDPOINTS.driving;
   const coordsParam = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
-  const url = `${OSRM_DEMO_BASE}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
+  const url = `${base}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
 
   let lastProblem = "";
   for (let attempt = 1; attempt <= ROUTING_MAX_ATTEMPTS; attempt++) {
@@ -82,9 +89,18 @@ async function fetchRoadRoute(waypoints) {
   }
   throw new Error(
     `Nie udało się pobrać trasy po ${ROUTING_MAX_ATTEMPTS} próbach (${lastProblem}).\n` +
-    "To darmowy serwer demo OSRM bez gwarancji dostępności — bywa chwilowo przeciążony. " +
+    "To darmowy, publiczny serwer wyznaczania tras bez gwarancji dostępności — bywa chwilowo przeciążony. " +
     "Sprawdź połączenie z internetem i spróbuj ponownie za chwilę."
   );
+}
+
+// trasa dla wybranego sposobu podróży: drogami (serwer routingu) albo w linii prostej (lokalnie)
+async function computeRoute(waypoints, mode) {
+  if (mode === "straight") {
+    validateWaypoints(waypoints);
+    return buildStraightRoute(waypoints);
+  }
+  return fetchRoadRoute(waypoints, mode);
 }
 
 /* ---------- 4) Podpięcie UI ---------- */
@@ -210,18 +226,41 @@ function releaseMedia(entry) {
 }
 
 /* ---------- Alternatywne źródło trasy: zbiór zdjęć z EXIF GPS + czas ---------- */
+const SOURCE_PANELS = { link: "sourceLink", photos: "sourcePhotos", gpx: "sourceGpx" };
+
+function selectSourceTab(tab) {
+  document.querySelectorAll(".tab-btn").forEach((b) => {
+    const active = b.dataset.tab === tab;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", String(active));
+  });
+  Object.entries(SOURCE_PANELS).forEach(([key, id]) => {
+    document.getElementById(id).style.display = key === tab ? "block" : "none";
+  });
+  // ślad GPX jest gotową trasą — sposób podróży dotyczy tylko tras wyznaczanych
+  document.getElementById("travelModeCard").style.display = tab === "gpx" ? "none" : "block";
+}
+
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-btn").forEach((b) => {
-      b.classList.remove("active");
-      b.setAttribute("aria-selected", "false");
-    });
-    btn.classList.add("active");
-    btn.setAttribute("aria-selected", "true");
     hideError();
-    document.getElementById("sourceLink").style.display = btn.dataset.tab === "link" ? "block" : "none";
-    document.getElementById("sourcePhotos").style.display = btn.dataset.tab === "photos" ? "block" : "none";
+    selectSourceTab(btn.dataset.tab);
   });
+});
+
+/* ---------- Sposób podróży ---------- */
+let travelMode = "driving";
+let travelModeTouched = false; // użytkownik wybrał sam — nie nadpisujemy trybem odczytanym z linku
+
+function setTravelMode(mode) {
+  if (!TRAVEL_MODES.includes(mode)) return;
+  travelMode = mode;
+  document.getElementById("travelModeSelect").value = mode;
+}
+
+document.getElementById("travelModeSelect").addEventListener("change", (e) => {
+  travelModeTouched = true;
+  setTravelMode(e.target.value);
 });
 
 const MAX_PHOTO_SET = 20;
@@ -342,6 +381,7 @@ function clearStoredData() {
   } catch {
     // localStorage niedostępny - nie ma czego czyścić
   }
+  deleteSavedProject(); // zapisany projekt (trasa + pliki) w IndexedDB
 }
 
 // Zapamiętuje ręcznie wpisane (lub odczytane z EXIF) współrzędne oraz kolejność
@@ -914,26 +954,16 @@ document.getElementById("step1PhotosNextBtn").addEventListener("click", async ()
   try {
     const waypoints = sorted.map((e, i) => ({
       name: e.kind ? e.name : `Zdjęcie ${i + 1}`,
+      autoNamed: !e.kind, // zostanie zastąpione nazwą miejscowości (patrz autoNameWaypoints)
       lat: e.lat,
       lng: e.lng,
       kind: e.kind ?? null,
     }));
     btn.textContent = "Liczę trasę…";
-    const route = prepareRoute(await fetchRoadRoute(waypoints));
-
+    const rawRoute = await computeRoute(waypoints, travelMode);
+    routePhotoEntries = sorted;
     // zdjęcia są już "dołączone" - to one były źródłem trasy (ten sam wpis co na liście)
-    const previousPhotos = waypointPhotos;
-    lastWaypoints = waypoints;
-    waypointPhotos = sorted.map((e) => (e.mediaEl ? e : null));
-    previousPhotos.forEach(releaseMedia);
-    routeSourceKey = routeKeyFor("photos", waypoints);
-
-    renderWaypointsList(waypoints);
-    renderRouteStats(route);
-    await showRouteOnMap(route, waypoints);
-    buildPhotosUI(waypoints); // pokaże już dołączone zdjęcia na liście
-
-    goToScreen(2);
+    await openRoute({ source: "photos", waypoints, rawRoute, photos: sorted.map((e) => (e.mediaEl ? e : null)) });
   } catch (e) {
     showError(e.message);
   } finally {
@@ -943,17 +973,88 @@ document.getElementById("step1PhotosNextBtn").addEventListener("click", async ()
   }
 });
 
-// Nazwy punktów pochodzą z wklejonego linku (czyli z niezaufanego źródła) —
-// zawsze wstawiamy je jako tekst (textContent), nigdy jako HTML.
+/* ---------- Wspólne zakończenie budowania trasy (link / zdjęcia / GPX / link do trasy / zapisany projekt) ---------- */
+let projectSource = null; // "link" | "photos" | "gpx" | "shared"
+let lastRawRoute = null; // trasa w postaci zwróconej przez router — do zapisu projektu
+let routePhotoEntries = []; // wpisy z listy zdjęć w kolejności, w jakiej zbudowały bieżącą trasę
+
+async function openRoute({ source, waypoints, rawRoute, photos }) {
+  const route = prepareRoute(rawRoute);
+
+  // Zdjęcia dołączone do przystanków zostają tylko wtedy, gdy to wciąż TA SAMA
+  // trasa (np. powrót o krok i ponowne "Dalej" albo zmiana sposobu podróży).
+  // Przy innych punktach przypinanie starych zdjęć po numerze punktu dawałoby
+  // zdjęcia w przypadkowych miejscach nowej trasy.
+  const key = routeKeyFor(source, waypoints);
+  const previousPhotos = waypointPhotos;
+  if (photos) waypointPhotos = photos;
+  else if (key !== routeSourceKey) waypointPhotos = [];
+  if (waypointPhotos !== previousPhotos) previousPhotos.forEach(releaseMedia);
+  if (source !== "photos") routePhotoEntries = [];
+
+  routeSourceKey = key;
+  projectSource = source;
+  lastWaypoints = waypoints;
+  lastRawRoute = rawRoute;
+
+  renderWaypointsList(waypoints);
+  renderRouteStats(route);
+  await showRouteOnMap(route, waypoints);
+  buildPhotosUI(waypoints);
+  updateShareLinkAvailability();
+  await goToScreen(2);
+  // Trasa otwarta z cudzego linku nie nadpisuje zapisanego projektu, dopóki
+  // użytkownik sam czegoś w niej nie zmieni (nazwa, zdjęcie, tytuł, muzyka).
+  projectDirty = false;
+  if (source !== "shared") scheduleProjectSave();
+  autoNameWaypoints(waypoints);
+}
+
+// Lista punktów z edytowalnymi nazwami (to one są podpisami w filmie).
+// Nazwy pochodzą m.in. z wklejonego linku, czyli z niezaufanego źródła — trafiają
+// wyłącznie do .value / textContent, nigdy do HTML.
 function renderWaypointsList(waypoints) {
   const list = document.getElementById("waypointsList");
   list.textContent = "";
-  waypoints.forEach((w) => {
+  waypoints.forEach((w, i) => {
     const row = document.createElement("div");
-    const suffix = w.kind === "empty" ? " (niewidoczny, tylko koryguje trasę)" : "";
-    row.textContent = `${w.name}${suffix} (${w.lat.toFixed(3)}, ${w.lng.toFixed(3)})`;
+    row.className = "wp-row";
+    const num = document.createElement("span");
+    num.className = "num";
+    num.textContent = `${i + 1}.`;
+    row.appendChild(num);
+    if (w.kind === "empty") {
+      const note = document.createElement("span");
+      note.className = "wp-note";
+      note.textContent = "Pusty punkt (niewidoczny, tylko koryguje trasę)";
+      row.appendChild(note);
+    } else {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "wp-name";
+      input.maxLength = 60;
+      input.value = w.name ?? "";
+      input.dataset.index = String(i);
+      input.setAttribute("aria-label", `Nazwa punktu ${i + 1} (podpis w filmie)`);
+      input.addEventListener("input", () => {
+        w.name = input.value.trim();
+        w.autoNamed = false;
+        setWaypointName(i, w.name);
+        scheduleProjectSave();
+      });
+      row.appendChild(input);
+    }
+    const coords = document.createElement("span");
+    coords.className = "wp-coords";
+    coords.textContent = `${w.lat.toFixed(3)}, ${w.lng.toFixed(3)}`;
+    row.appendChild(coords);
     list.appendChild(row);
   });
+}
+
+function setWaypointName(index, name) {
+  if (waypointFeatures[index]) waypointFeatures[index].name = name;
+  if (map && currentRoute && stageMode === "static") renderStatic();
 }
 
 let routeSourceKey = null; // z czego powstała bieżąca trasa — patrz routeKeyFor
@@ -963,6 +1064,12 @@ function routeKeyFor(source, waypoints) {
 }
 
 function renderRouteStats(route) {
+  const labels = {
+    gpx: ["Długość śladu", "Czas nagrania śladu"],
+    straight: ["Dystans w linii prostej", "Szac. czas podróży"],
+  }[projectSource === "gpx" ? "gpx" : travelMode] ?? ["Dystans", "Szac. czas podróży"];
+  document.getElementById("statDistLabel").textContent = labels[0];
+  document.getElementById("statDurLabel").textContent = labels[1];
   document.getElementById("statDist").textContent = `${(route.distanceMeters / 1000).toFixed(0)} km`;
   document.getElementById("statDur").textContent = formatDuration(route.durationSeconds);
 }
@@ -1032,6 +1139,7 @@ function buildPhotosUI(waypoints) {
         // zanim zdążysz dołączyć zdjęcia tutaj — stąd jawna synchronizacja
         setWaypointMedia(i, entry);
         updateDurationInfo();
+        scheduleProjectSave();
       } catch (err) {
         showError(err?.message || `Nie udało się wczytać pliku dla punktu "${w.name}".`);
       } finally {
@@ -1049,30 +1157,14 @@ document.getElementById("step1NextBtn").addEventListener("click", async () => {
   btn.disabled = true;
   try {
     btn.textContent = "Wyciągam punkty…";
-    const { waypoints } = parseGoogleMapsLink(url);
-
-    btn.textContent = "Liczę trasę…";
-    const route = prepareRoute(await fetchRoadRoute(waypoints));
-
-    // Zdjęcia dołączone do przystanków zostają tylko wtedy, gdy to wciąż TA SAMA
-    // trasa (np. powrót o krok i ponowne "Dalej"). Przy innym linku albo po
-    // przejściu z trybu zdjęć przypinanie starych zdjęć po numerze punktu
-    // dawałoby zdjęcia w przypadkowych miejscach nowej trasy.
-    const key = routeKeyFor("link", waypoints);
-    if (key !== routeSourceKey) {
-      const previousPhotos = waypointPhotos;
-      waypointPhotos = [];
-      previousPhotos.forEach(releaseMedia);
+    const parsed = parseGoogleMapsLink(url);
+    // link z trasą pieszą/rowerową sam podpowiada sposób podróży (o ile nie wybrano go ręcznie)
+    if (!travelModeTouched && (parsed.travelMode === "cycling" || parsed.travelMode === "walking")) {
+      setTravelMode(parsed.travelMode);
     }
-    routeSourceKey = key;
-    lastWaypoints = waypoints;
-    buildPhotosUI(waypoints);
-
-    renderWaypointsList(waypoints);
-    renderRouteStats(route);
-    await showRouteOnMap(route, waypoints);
-
-    goToScreen(2);
+    btn.textContent = "Liczę trasę…";
+    const rawRoute = await computeRoute(parsed.waypoints, travelMode);
+    await openRoute({ source: "link", waypoints: parsed.waypoints, rawRoute });
   } catch (e) {
     showError(e.message);
   } finally {
@@ -1139,6 +1231,8 @@ function describeVideoDuration() {
     const noun = d.reveals === 1 ? "pokaz zdjęcia" : "pokazy zdjęć";
     parts.push(`${d.reveals} × ${noun} po ${formatDecimalPl(d.revealMs / 1000)} s`);
   }
+  if (d.introMs > 0) parts.unshift(`tytuł ${formatDecimalPl(d.introMs / 1000)} s`);
+  if (showSummary) parts.push(`podsumowanie ${formatDecimalPl(d.outroMs / 1000)} s`);
   return `Długość filmu: ok. ${formatDecimalPl(d.totalMs / 1000)} s (${parts.join(" + ")})`;
 }
 
@@ -1223,7 +1317,10 @@ async function playAnimation() {
   hideError();
   btn.textContent = STOP_LABEL;
   try {
-    await playTimeline();
+    await playTimeline({
+      onPreparing: (p) => { btn.textContent = `■ Wczytuję mapę… ${Math.round(p * 100)}% (dotknij, aby przerwać)`; },
+      onStart: () => { btn.textContent = STOP_LABEL; },
+    });
   } catch (e) {
     showError(e.message);
   } finally {
@@ -1310,9 +1407,10 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
   btn.textContent = "■ Anuluj nagrywanie (0%)";
   const wakeLock = await acquireWakeLock();
   try {
-    const result = await recordVideo((progress) => {
-      btn.textContent = `■ Anuluj nagrywanie (${Math.round(progress * 100)}%)`;
-    });
+    const result = await recordVideo(
+      (progress) => { btn.textContent = `■ Anuluj nagrywanie (${Math.round(progress * 100)}%)`; },
+      (p) => { btn.textContent = `■ Wczytuję mapę… ${Math.round(p * 100)}% (dotknij, aby anulować)`; }
+    );
     if (!result.cancelled) showExportResult(result);
   } catch (e) {
     showError(e.message);
@@ -1352,6 +1450,7 @@ async function goToScreen(n) {
   await waitForPlaybackToStop();
   currentScreen = n;
   hideError();
+  endFramingMode(); // kadr ustawia się tylko na ekranie 2
   for (let i = 1; i <= 4; i++) {
     document.getElementById(`screen${i}`).style.display = i === n ? "block" : "none";
     const step = document.getElementById(`stepperItem${i}`);
@@ -1390,6 +1489,10 @@ async function resetProject() {
   lastTimeline = null;
   stageMode = "static";
   clearExportResult();
+  projectSource = null;
+  lastRawRoute = null;
+  routePhotoEntries = [];
+  resetProjectExtras(); // tytuł, muzyka, plik GPX, zapisany projekt (js/features.js)
 
   document.getElementById("linkInput").value = "";
   document.getElementById("photosList").textContent = "";
@@ -1494,7 +1597,7 @@ function applyAspectRatio(key) {
     syncMapPixelRatio();
     if (currentRoute) {
       stageMode = "static";
-      fitToRoute();
+      fitToRouteUnlessCustom();
       renderStatic();
     }
   }
@@ -1506,7 +1609,7 @@ window.addEventListener("resize", () => {
   map.resize();
   syncMapPixelRatio();
   if (currentRoute && stageMode === "static") {
-    fitToRoute();
+    fitToRouteUnlessCustom();
     renderStatic();
   }
 });
@@ -1532,6 +1635,10 @@ function saveSettings() {
         growSeconds: REVEAL_GROW_MS / 1000,
         holdSeconds: REVEAL_HOLD_MS / 1000,
         ratioKey: currentRatioKey,
+        mapStyleKey,
+        cameraMode,
+        showCaptions,
+        showSummary,
       })
     );
   } catch {
@@ -1555,6 +1662,10 @@ function applyLoadedSettings() {
   // wartość z localStorage trafia do stylu CSS i stylu mapy - akceptujemy tylko kolory z palety
   if (COLOR_PALETTE.includes(s.routeColor)) routeColor = s.routeColor;
   if (s.selectedIconKey && ICON_LIBRARY[s.selectedIconKey]) selectedIconKey = s.selectedIconKey;
+  if (typeof s.mapStyleKey === "string" && Object.hasOwn(MAP_STYLES, s.mapStyleKey)) mapStyleKey = s.mapStyleKey;
+  if (s.cameraMode === "full" || s.cameraMode === "follow") cameraMode = s.cameraMode;
+  if (typeof s.showCaptions === "boolean") showCaptions = s.showCaptions;
+  if (typeof s.showSummary === "boolean") showSummary = s.showSummary;
   return s;
 }
 
@@ -1583,7 +1694,7 @@ applyLoadedSettingsPostBuild(_loadedSettings);
 document.getElementById("clearStoredDataBtn").addEventListener("click", () => {
   clearStoredData();
   const info = document.getElementById("clearStoredDataInfo");
-  info.textContent = "Usunięto zapamiętane lokalizacje plików i ustawienia z tej przeglądarki.";
+  info.textContent = "Usunięto zapamiętane lokalizacje plików, ustawienia i zapisany projekt z tej przeglądarki.";
 });
 
 
