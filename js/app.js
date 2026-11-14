@@ -1358,7 +1358,9 @@ function showExportResult(result) {
   lastExport = { blob: result.blob, ext: result.ext, url: URL.createObjectURL(result.blob) };
   document.getElementById("exportPreview").src = lastExport.url;
   const mb = formatDecimalPl(result.blob.size / (1024 * 1024));
-  document.getElementById("exportResultInfo").textContent = `Plik trasa.${result.ext}, ${mb} MB`;
+  const extras = [result.hasAudio ? "z muzyką" : null, result.method === "realtime" ? "nagranie na żywo" : null].filter(Boolean);
+  document.getElementById("exportResultInfo").textContent =
+    `Plik trasa.${result.ext}, ${mb} MB${extras.length ? ` (${extras.join(", ")})` : ""}`;
   // "Udostępnij" tylko tam, gdzie system naprawdę przyjmie plik wideo (głównie telefony)
   let canShare = false;
   try {
@@ -1404,12 +1406,18 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
   setNavigationLocked(true);
   clearExportResult();
   document.getElementById("exportHint").style.display = "block";
-  btn.textContent = "■ Anuluj nagrywanie (0%)";
+  btn.textContent = "■ Anuluj (0%)";
   const wakeLock = await acquireWakeLock();
   try {
-    const result = await recordVideo(
-      (progress) => { btn.textContent = `■ Anuluj nagrywanie (${Math.round(progress * 100)}%)`; },
-      (p) => { btn.textContent = `■ Wczytuję mapę… ${Math.round(p * 100)}% (dotknij, aby anulować)`; }
+    const hint = document.getElementById("exportHint");
+    const result = await exportVideo(
+      (progress) => { btn.textContent = `■ Anuluj (${Math.round(progress * 100)}%)`; },
+      (p) => { btn.textContent = `■ Wczytuję mapę… ${Math.round(p * 100)}% (dotknij, aby anulować)`; },
+      (method) => {
+        hint.textContent = method === "frames"
+          ? "Film powstaje klatka po klatce. Zostaw stronę otwartą; możesz anulować w każdej chwili."
+          : "Ta przeglądarka nagrywa film na żywo: potrwa to tyle, ile film. Zostaw tę kartę na wierzchu i nie blokuj ekranu — inaczej nagranie zostanie przerwane.";
+      }
     );
     if (!result.cancelled) showExportResult(result);
   } catch (e) {

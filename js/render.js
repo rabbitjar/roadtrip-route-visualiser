@@ -646,7 +646,7 @@ function strokeRoute(dist) {
 // Rysuje znaczniki przystanków — zwykłe kropki, flagi start/meta i miniaturki
 // zdjęć. t === null: podgląd statyczny (wszystkie widoczne, z numerami);
 // t = czas animacji: widoczne tylko te już "odwiedzone".
-function drawWaypointMarkers(t) {
+function drawWaypointMarkers(t, showNumbers = t === null) {
   const scale = stageScale();
   const r = 12 * scale;
   const thumbSize = Math.round(r * 2);
@@ -690,7 +690,7 @@ function drawWaypointMarkers(t) {
     stageCtx.stroke();
 
     // numery TYLKO na statycznym podglądzie (do dopasowania zdjęć), nigdy w animacji/eksporcie
-    if (t === null && !isStart && !isFinish) {
+    if (showNumbers && !isStart && !isFinish) {
       stageCtx.fillStyle = "#1b1f23";
       stageCtx.font = `700 ${Math.round(r * 1.15)}px -apple-system, Roboto, sans-serif`;
       stageCtx.textAlign = "center";
@@ -1041,7 +1041,7 @@ function renderFrame(timeline, t) {
     const wobble = Math.sin((t / 1000) * WOBBLE_FREQUENCY) * wobbleAmplitude;
     drawMotoMarker(lng, lat, headingForDistance(state.dist) + wobble);
   }
-  drawWaypointMarkers(state.type === "start" ? null : t);
+  drawWaypointMarkers(state.type === "start" ? null : t, false); // numery są tylko w podglądzie, nigdy w filmie
   if (state.type !== "start") drawCaptions(t);
   // licznik pokazuje realny dystans drogowy z routera, nie długość uproszczonej geometrii
   const fraction = route.animTotal > 0 ? state.dist / route.animTotal : 1;
