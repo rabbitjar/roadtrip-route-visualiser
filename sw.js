@@ -4,18 +4,20 @@
    wersja aplikacji (kopia w pamięci jest przy okazji odświeżana); kopia służy
    tylko jako zapas offline. Obsługiwane są wyłącznie pliki samej aplikacji —
    kafelki map i zapytania o trasy idą prosto do swoich serwerów. */
-const CACHE = "moto-route-shell-v1";
+const CACHE = "moto-route-shell-v2";
 const SHELL = [
   "./",
   "index.html",
   "css/style.css",
   "js/core.js",
   "js/render.js",
+  "js/export.js",
   "js/app.js",
   "js/features.js",
   "vendor/maplibre-gl.js",
   "vendor/maplibre-gl.css",
   "vendor/exifr-lite.umd.js",
+  "vendor/mp4-muxer.js",
   "favicon.svg",
   "manifest.webmanifest",
   "icons/icon-192.png",
