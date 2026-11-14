@@ -1,15 +1,11 @@
 "use strict";
 
 /* ---------- 2) Wyznaczanie trasy ---------- */
-// Publiczne serwery OSRM: demo projektu OSRM (samochód) oraz instancje FOSSGIS
-// (rower, pieszo). Tryb "straight" nie korzysta z sieci — liczony jest lokalnie.
-const ROUTING_ENDPOINTS = {
-  driving: "https://router.project-osrm.org/route/v1/driving",
-  cycling: "https://routing.openstreetmap.de/routed-bike/route/v1/driving",
-  walking: "https://routing.openstreetmap.de/routed-foot/route/v1/driving",
-};
-const ROUTING_TIMEOUT_MS = 20000;
-const ROUTING_MAX_ATTEMPTS = 3;
+// Adresy serwerów routingu są w js/config.js (APP_CONFIG.routing).
+// Tryb "straight" nie korzysta z sieci — liczony jest lokalnie.
+const ROUTING_ENDPOINTS = APP_CONFIG.routing;
+const ROUTING_TIMEOUT_MS = APP_CONFIG.routing.timeoutMs;
+const ROUTING_MAX_ATTEMPTS = APP_CONFIG.routing.maxAttempts;
 
 function validateWaypoints(waypoints) {
   if (!Array.isArray(waypoints) || waypoints.length < 2) {
@@ -34,7 +30,8 @@ async function fetchRoadRoute(waypoints, mode = "driving") {
   validateWaypoints(waypoints);
   const base = ROUTING_ENDPOINTS[mode] ?? ROUTING_ENDPOINTS.driving;
   const coordsParam = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
-  const url = `${base}/${coordsParam}?overview=full&geometries=geojson&steps=false`;
+  const extra = ROUTING_ENDPOINTS.extraQuery ? `&${ROUTING_ENDPOINTS.extraQuery}` : "";
+  const url = `${base}/${coordsParam}?overview=full&geometries=geojson&steps=false${extra}`;
 
   let lastProblem = "";
   for (let attempt = 1; attempt <= ROUTING_MAX_ATTEMPTS; attempt++) {
@@ -313,7 +310,7 @@ const PLACE_SEARCH_DEBOUNCE_MS = 300;
 
 
 async function searchPlaces(query, signal) {
-  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=6`;
+  const url = `${APP_CONFIG.placeSearch}/api/?q=${encodeURIComponent(query)}&limit=6`;
   const res = await fetch(url, { signal, referrerPolicy: "no-referrer", credentials: "omit" });
   if (!res.ok) throw new Error(`Photon HTTP ${res.status}`);
   const data = await res.json();

@@ -209,7 +209,7 @@ async function autoNameWaypoints(waypoints) {
     const w = waypoints[i];
     if (!w.autoNamed) continue;
     try {
-      const url = `https://photon.komoot.io/reverse?lon=${encodeURIComponent(w.lng)}&lat=${encodeURIComponent(w.lat)}&limit=1`;
+      const url = `${APP_CONFIG.placeSearch}/reverse?lon=${encodeURIComponent(w.lng)}&lat=${encodeURIComponent(w.lat)}&limit=1`;
       const res = await fetch(url, { referrerPolicy: "no-referrer", credentials: "omit" });
       if (run !== autoNameRun || lastWaypoints !== waypoints) return; // w międzyczasie powstała inna trasa
       if (!res.ok) continue;
