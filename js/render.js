@@ -179,14 +179,22 @@ function buildIconPickerUI() {
   const container = document.getElementById("iconPicker");
   container.innerHTML = "";
   Object.entries(ICON_LIBRARY).forEach(([key, def]) => {
-    const btn = document.createElement("div");
+    // prawdziwy <button>: działa z klawiatury i jest czytany przez czytniki ekranu
+    const btn = document.createElement("button");
+    btn.type = "button";
     btn.className = "icon-choice" + (key === selectedIconKey ? " active" : "");
     btn.title = def.label;
+    btn.setAttribute("aria-label", def.label);
+    btn.setAttribute("aria-pressed", String(key === selectedIconKey));
     btn.innerHTML = buildIconSvg(def.paths, false);
     btn.addEventListener("click", () => {
       selectedIconKey = key;
-      document.querySelectorAll(".icon-choice").forEach((el) => el.classList.remove("active"));
+      document.querySelectorAll(".icon-choice").forEach((el) => {
+        el.classList.remove("active");
+        el.setAttribute("aria-pressed", "false");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-pressed", "true");
       saveSettings();
     });
     container.appendChild(btn);
@@ -797,6 +805,13 @@ function renderFrame(timeline, t) {
   drawAttribution();
   if (state.type === "reveal") drawPhotoReveal(waypointFeatures[state.stopIndex], state.elapsed);
   return state;
+}
+
+// Długość gotowego filmu w ms dla bieżących ustawień: jazda + pokazy zdjęć + końcowa klatka.
+function estimateVideoDuration() {
+  const reveals = waypointFeatures.filter((w) => w.media && w.kind !== "empty").length;
+  const travelMs = selectedDuration * 1000;
+  return { travelMs, reveals, revealMs: revealTotalMs(), totalMs: travelMs + reveals * revealTotalMs() + END_HOLD_MS };
 }
 
 function cancelPlayback() {

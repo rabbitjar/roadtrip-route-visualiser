@@ -270,3 +270,46 @@ button:disabled { opacity: 0.5; }
 .privacy-note p { margin: 8px 0; }
 .privacy-note ul { margin: 6px 0; padding-left: 20px; }
 .privacy-info { color: var(--accent); min-height: 1.2em; }
+
+/* ---------- wskaźnik kroków ---------- */
+.stepper { margin-bottom: 12px; }
+.stepper ol { display: flex; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.stepper li { flex: 1; height: 6px; border-radius: 3px; background: var(--line); }
+.stepper li.done { background: #9cc5b3; }
+.stepper li.active { background: var(--accent); }
+.stepper p { margin: 6px 0 0; font-size: 0.8rem; color: #5b5f63; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* ---------- komunikat błędu ---------- */
+.error-card { border-color: var(--err); margin: 0 0 14px; }
+.error-head { display: flex; justify-content: space-between; align-items: center; }
+.error-card h2 { color: var(--err); margin: 0; }
+.error-close {
+  width: 32px; height: 32px; margin: 0; padding: 0; flex-shrink: 0;
+  background: transparent; color: var(--err); border: none; font-size: 1rem;
+}
+
+/* ---------- widoczny fokus dla klawiatury ---------- */
+:focus-visible { outline: 3px solid #1a73e8; outline-offset: 2px; }
+.reset-default:focus-visible { outline-offset: 1px; }
+
+/* ---------- lista zdjęć: strzałki kolejności ---------- */
+.ps-move-btn {
+  margin-top: 0; width: 32px; height: 26px; padding: 0;
+  background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+  font-size: 0.7rem; display: flex; align-items: center; justify-content: center;
+}
+
+/* ---------- eksport ---------- */
+.duration-info { margin: 8px 0 0; min-height: 1.3em; }
+.hint-box {
+  margin: 10px 0 0; padding: 10px 12px; font-size: 0.88rem;
+  background: #fff8e1; border: 1px solid #e6c97a; border-radius: 8px;
+}
+.export-preview {
+  display: block; width: 100%; max-width: 260px; margin: 0 auto 8px;
+  border-radius: 8px; background: #000;
+}

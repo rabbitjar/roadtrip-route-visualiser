@@ -91,9 +91,13 @@ async function fetchRoadRoute(waypoints) {
 let lastWaypoints = null;
 let waypointPhotos = []; // trwałe (nie resetowane przy ponownym pobraniu trasy), indeksowane jak waypoints
 
+// Komunikat błędu jest na górze strony i sam przewija się w pole widzenia —
+// wcześniej lądował pod całym ekranem i łatwo było go nie zauważyć.
 function showError(msg) {
-  document.getElementById("errorBox").style.display = "block";
+  const box = document.getElementById("errorBox");
+  box.style.display = "block";
   document.getElementById("errorText").textContent = msg;
+  box.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 function hideError() {
   document.getElementById("errorBox").style.display = "none";
@@ -208,8 +212,13 @@ function releaseMedia(entry) {
 /* ---------- Alternatywne źródło trasy: zbiór zdjęć z EXIF GPS + czas ---------- */
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tab-btn").forEach((b) => {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
     btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
+    hideError();
     document.getElementById("sourceLink").style.display = btn.dataset.tab === "link" ? "block" : "none";
     document.getElementById("sourcePhotos").style.display = btn.dataset.tab === "photos" ? "block" : "none";
   });
@@ -468,6 +477,22 @@ function finishDrag(dropClientY) {
   renderPhotoSetList();
 }
 
+function movePhotoSetEntry(entryId, delta) {
+  const ordered = getOrderedPhotoSetEntries();
+  const from = ordered.findIndex((e) => e.id === entryId);
+  const to = from + delta;
+  if (from === -1 || to < 0 || to >= ordered.length) return;
+  if (ordered[to].kind === "start" || ordered[to].kind === "finish") return; // start/meta trzymają krańce
+  [ordered[from], ordered[to]] = [ordered[to], ordered[from]];
+  photoSetEntries = ordered;
+  manualOrderApplied = true;
+  savePhotoMemory();
+  renderPhotoSetList();
+  // po przebudowie listy fokus wraca na ten sam przycisk tego samego wiersza
+  const again = document.querySelector(`.ps-move-btn[data-id="${entryId}"][data-delta="${delta}"]`);
+  (again && !again.disabled ? again : document.querySelector(`.ps-move-btn[data-id="${entryId}"]:not([disabled])`))?.focus();
+}
+
 function renderPhotoSetList() {
   const container = document.getElementById("photoSetList");
   container.innerHTML = "";
@@ -488,7 +513,7 @@ function renderPhotoSetList() {
         ? `<div class="photoset-status ok">✓ ${entry.lat.toFixed(4)}, ${entry.lng.toFixed(4)}</div>`
         : `<div class="photoset-status warn">⚠ brak lokalizacji (${noLocationLabel})</div>
            <div class="manual-coords-row">
-             <input type="text" placeholder="Miasto, miejsce, restauracja… albo wklej współrzędne" class="manual-coords-input" autocomplete="off" data-id="${entry.id}">
+             <input type="text" placeholder="Miasto, miejsce, restauracja… albo wklej współrzędne" aria-label="Lokalizacja punktu: nazwa miejsca albo współrzędne" class="manual-coords-input" autocomplete="off" data-id="${entry.id}">
              <button type="button" class="manual-coords-btn" data-id="${entry.id}">Ustaw</button>
              <div class="place-suggestions" data-id="${entry.id}" hidden></div>
            </div>
@@ -514,7 +539,7 @@ function renderPhotoSetList() {
     } else if (entry.type === "video") {
       thumbTag = `<video class="thumb" src="${entry.url}" muted playsinline></video>`;
     } else {
-      thumbTag = `<img class="thumb" src="${entry.url}">`;
+      thumbTag = `<img class="thumb" src="${entry.url}" alt="">`;
     }
 
     const dragHandleHtml = isPinned
@@ -528,12 +553,20 @@ function renderPhotoSetList() {
         </span>`;
     const replaceBtnHtml = isPinned || isEmpty
       ? ""
-      : `<button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień">
+      : `<button type="button" class="ps-replace-btn" data-id="${entry.id}" title="Podmień" aria-label="Podmień plik">
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1b1f23" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
             <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
           </svg>
         </button>`;
+
+    // strzałki góra/dół: zmiana kolejności bez przeciągania (klawiatura, czytniki ekranu)
+    const middle = sorted.filter((e) => e.kind !== "start" && e.kind !== "finish");
+    const posInMiddle = middle.indexOf(entry);
+    const moveBtnsHtml = isPinned
+      ? ""
+      : `<button type="button" class="ps-move-btn" data-id="${entry.id}" data-delta="-1" aria-label="Przesuń wyżej" title="Przesuń wyżej"${posInMiddle === 0 ? " disabled" : ""}>▲</button>
+         <button type="button" class="ps-move-btn" data-id="${entry.id}" data-delta="1" aria-label="Przesuń niżej" title="Przesuń niżej"${posInMiddle === middle.length - 1 ? " disabled" : ""}>▼</button>`;
 
     row.innerHTML = `
       ${dragHandleHtml}
@@ -544,8 +577,9 @@ function renderPhotoSetList() {
         ${statusHtml}
       </div>
       <div class="photoset-actions">
+        ${moveBtnsHtml}
         ${replaceBtnHtml}
-        <button type="button" class="ps-remove-btn" data-id="${entry.id}" title="Usuń">✕</button>
+        <button type="button" class="ps-remove-btn" data-id="${entry.id}" title="Usuń" aria-label="Usuń">✕</button>
       </div>
     `;
     row.dataset.entryId = entry.id;
@@ -563,6 +597,9 @@ function renderPhotoSetList() {
       updatePhotoSetNextBtn();
       updatePinnedMarkerButtons();
     });
+  });
+  container.querySelectorAll(".ps-move-btn").forEach((btn) => {
+    btn.addEventListener("click", () => movePhotoSetEntry(btn.dataset.id, Number(btn.dataset.delta)));
   });
   container.querySelectorAll(".ps-replace-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -799,10 +836,9 @@ document.getElementById("photoSetInput").addEventListener("change", async (e) =>
   hideError();
 
   const remaining = MAX_PHOTO_SET - countPhotoLikeEntries();
-  if (files.length > remaining) {
-    showError(`Możesz dodać jeszcze maksymalnie ${remaining} plików (limit ${MAX_PHOTO_SET} łącznie).`);
-    return;
-  }
+  // ponad limit: bierzemy tyle, ile się mieści, zamiast odrzucać cały wybór
+  const skippedOverLimit = Math.max(0, files.length - remaining);
+  if (skippedOverLimit > 0) files.length = Math.max(0, remaining);
   // jeden nieczytelny plik (np. HEIC w Chrome na Androidzie) nie może przerwać
   // wczytywania pozostałych — zbieramy błędy i pokazujemy je razem na końcu
   const failures = [];
@@ -826,9 +862,18 @@ document.getElementById("photoSetInput").addEventListener("change", async (e) =>
   applyRememberedOrder();
   renderPhotoSetList();
   updatePhotoSetNextBtn();
-  if (failures.length) {
-    showError(`Pominięto ${failures.length} z ${files.length} plików:\n${failures.join("\n")}`);
+  const notes = [];
+  if (skippedOverLimit > 0) {
+    notes.push(
+      files.length > 0
+        ? `Dodano pierwsze ${files.length} plików — pozostałe ${skippedOverLimit} pominięto, bo limit to ${MAX_PHOTO_SET}.`
+        : `Limit ${MAX_PHOTO_SET} plików jest już wykorzystany — usuń któryś, żeby dodać nowy.`
+    );
   }
+  if (failures.length) {
+    notes.push(`Pominięto ${failures.length} z ${files.length} plików:\n${failures.join("\n")}`);
+  }
+  if (notes.length) showError(notes.join("\n\n"));
 });
 
 document.getElementById("photoSetReplaceInput").addEventListener("change", async (e) => {
@@ -919,7 +964,7 @@ function routeKeyFor(source, waypoints) {
 
 function renderRouteStats(route) {
   document.getElementById("statDist").textContent = `${(route.distanceMeters / 1000).toFixed(0)} km`;
-  document.getElementById("statDur").textContent = `${(route.durationSeconds / 3600).toFixed(1)} h`;
+  document.getElementById("statDur").textContent = formatDuration(route.durationSeconds);
 }
 
 function buildPhotosUI(waypoints) {
@@ -936,7 +981,7 @@ function buildPhotosUI(waypoints) {
       <span class="num">${i + 1}.</span>
       <span class="name">${escapeHtml(w.name)}</span>
       <span class="thumb-wrap" id="thumbWrap-${i}"></span>
-      <input type="file" accept="image/*,video/*" id="photoInput-${i}">
+      <input type="file" accept="image/*,video/*" id="photoInput-${i}" aria-label="Zdjęcie lub film dla punktu ${i + 1}">
     `;
     list.appendChild(row);
 
@@ -986,6 +1031,7 @@ function buildPhotosUI(waypoints) {
         // przystanki na mapie budują się od razu po pobraniu trasy (krok 1), czyli
         // zanim zdążysz dołączyć zdjęcia tutaj — stąd jawna synchronizacja
         setWaypointMedia(i, entry);
+        updateDurationInfo();
       } catch (err) {
         showError(err?.message || `Nie udało się wczytać pliku dla punktu "${w.name}".`);
       } finally {
@@ -1043,27 +1089,57 @@ const BASE_DURATION_SECONDS = 7; // odpowiada prędkości = 1, tak jak dotychcza
 function wireCombo(textId, sliderId, { toValue, toSlider, fallback, onChange }) {
   const textEl = document.getElementById(textId);
   const sliderEl = document.getElementById(sliderId);
+  // dozwolony zakres wynika z suwaka — wartość wpisana ręcznie jest do niego
+  // przycinana (wcześniej "0.001" dawało film trwający dwie godziny)
+  const min = toValue(parseInt(sliderEl.min, 10));
+  const max = toValue(parseInt(sliderEl.max, 10));
+  const clamp = (v) => clampNumber(v, min, max);
 
   textEl.addEventListener("input", () => {
-    const v = parseDecimalInput(textEl.value, fallback);
+    const v = clamp(parseDecimalInput(textEl.value, fallback));
     sliderEl.value = toSlider(v);
     onChange(v);
     saveSettings();
+    updateDurationInfo();
+  });
+  // po wyjściu z pola pokazujemy wartość faktycznie użytą (po przycięciu)
+  textEl.addEventListener("change", () => {
+    textEl.value = formatNum(clamp(parseDecimalInput(textEl.value, fallback)));
   });
   sliderEl.addEventListener("input", () => {
     const v = toValue(parseInt(sliderEl.value, 10));
     textEl.value = formatNum(v);
     onChange(v);
     saveSettings();
+    updateDurationInfo();
   });
 
   function setValue(v) {
+    v = clamp(Number.isFinite(v) ? v : fallback);
     textEl.value = formatNum(v);
     sliderEl.value = toSlider(v);
     onChange(v);
+    updateDurationInfo();
   }
   setValue.default = fallback; // do przycisku "przywróć domyślne" przy suwaku
   return setValue;
+}
+
+// "Długość filmu: 12,4 s" — zamiast abstrakcyjnej "prędkości 1" widać od razu,
+// ile potrwa gotowe wideo przy bieżących ustawieniach
+function updateDurationInfo() {
+  const text = currentRoute ? describeVideoDuration() : "";
+  document.querySelectorAll(".duration-info").forEach((el) => { el.textContent = text; });
+}
+
+function describeVideoDuration() {
+  const d = estimateVideoDuration();
+  const parts = [`jazda ${formatDecimalPl(d.travelMs / 1000)} s`];
+  if (d.reveals > 0) {
+    const noun = d.reveals === 1 ? "pokaz zdjęcia" : "pokazy zdjęć";
+    parts.push(`${d.reveals} × ${noun} po ${formatDecimalPl(d.revealMs / 1000)} s`);
+  }
+  return `Długość filmu: ok. ${formatDecimalPl(d.totalMs / 1000)} s (${parts.join(" + ")})`;
 }
 
 const setSpeed = wireCombo("speedInput", "speedSlider", {
@@ -1116,16 +1192,26 @@ const setHold = wireCombo("holdInput", "holdSlider", {
 const RESET_SETTERS = { speed: setSpeed, wobble: setWobble, size: setIconSize, grow: setGrow, hold: setHold };
 document.querySelectorAll(".reset-default").forEach((el) => {
   const setter = RESET_SETTERS[el.dataset.reset];
-  el.addEventListener("click", () => {
+  const reset = () => {
     setter(setter.default);
     saveSettings();
+  };
+  el.setAttribute("role", "button");
+  el.tabIndex = 0;
+  el.addEventListener("click", reset);
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      reset();
+    }
   });
 });
 
 const PLAY_LABEL = "▶ Odtwórz animację";
 const STOP_LABEL = "■ Zatrzymaj animację";
-const EXPORT_LABEL = "Pobierz wideo";
+const EXPORT_LABEL = "● Nagraj wideo";
 let exportInProgress = false;
+let lastExport = null; // { blob, ext, url } — ostatnie gotowe nagranie
 
 async function playAnimation() {
   if (!currentRoute) return;
@@ -1146,6 +1232,67 @@ async function playAnimation() {
 }
 document.getElementById("playAnimBtn").addEventListener("click", playAnimation);
 
+// Blokada wygaszania ekranu na czas nagrywania: nagranie powstaje w czasie
+// rzeczywistym, a przygaszony/zablokowany ekran je przerywa.
+async function acquireWakeLock() {
+  try {
+    return (await navigator.wakeLock?.request("screen")) ?? null;
+  } catch {
+    return null; // brak wsparcia albo odmowa (np. tryb oszczędzania energii) — nagrywamy bez blokady
+  }
+}
+
+function clearExportResult() {
+  if (lastExport?.url) URL.revokeObjectURL(lastExport.url);
+  lastExport = null;
+  const preview = document.getElementById("exportPreview");
+  preview.removeAttribute("src");
+  preview.load();
+  document.getElementById("exportResult").style.display = "none";
+}
+
+function exportFile() {
+  // sam typ MIME, bez parametru codecs — część aplikacji odrzuca przy udostępnianiu "video/mp4;codecs=…"
+  return new File([lastExport.blob], `trasa.${lastExport.ext}`, { type: lastExport.blob.type.split(";")[0] });
+}
+
+function showExportResult(result) {
+  clearExportResult();
+  lastExport = { blob: result.blob, ext: result.ext, url: URL.createObjectURL(result.blob) };
+  document.getElementById("exportPreview").src = lastExport.url;
+  const mb = formatDecimalPl(result.blob.size / (1024 * 1024));
+  document.getElementById("exportResultInfo").textContent = `Plik trasa.${result.ext}, ${mb} MB`;
+  // "Udostępnij" tylko tam, gdzie system naprawdę przyjmie plik wideo (głównie telefony)
+  let canShare = false;
+  try {
+    canShare = !!navigator.canShare?.({ files: [exportFile()] });
+  } catch {
+    canShare = false;
+  }
+  const shareBtn = document.getElementById("shareBtn");
+  const saveBtn = document.getElementById("saveBtn");
+  shareBtn.style.display = canShare ? "block" : "none";
+  saveBtn.classList.toggle("secondary-btn", canShare);
+  document.getElementById("exportResult").style.display = "block";
+  document.getElementById("exportResult").scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+document.getElementById("saveBtn").addEventListener("click", () => {
+  if (lastExport) downloadBlob(lastExport.blob, `trasa.${lastExport.ext}`);
+});
+
+document.getElementById("shareBtn").addEventListener("click", async () => {
+  if (!lastExport) return;
+  try {
+    await navigator.share({ files: [exportFile()], title: "Moja trasa" });
+  } catch (e) {
+    // AbortError = użytkownik zamknął okno udostępniania; to nie jest błąd
+    if (e?.name !== "AbortError") {
+      showError("Nie udało się otworzyć udostępniania na tym urządzeniu. Użyj przycisku „Zapisz plik”.");
+    }
+  }
+});
+
 document.getElementById("exportBtn").addEventListener("click", async () => {
   if (!currentRoute) return;
   const btn = document.getElementById("exportBtn");
@@ -1158,24 +1305,21 @@ document.getElementById("exportBtn").addEventListener("click", async () => {
   await waitForPlaybackToStop();
   exportInProgress = true;
   setNavigationLocked(true);
+  clearExportResult();
+  document.getElementById("exportHint").style.display = "block";
   btn.textContent = "■ Anuluj nagrywanie (0%)";
+  const wakeLock = await acquireWakeLock();
   try {
     const result = await recordVideo((progress) => {
       btn.textContent = `■ Anuluj nagrywanie (${Math.round(progress * 100)}%)`;
     });
-    if (result.cancelled) {
-      btn.textContent = EXPORT_LABEL;
-    } else {
-      downloadBlob(result.blob, `trasa.${result.ext}`);
-      btn.textContent = `Pobrano (.${result.ext}) ✓`;
-      setTimeout(() => {
-        if (!exportInProgress) btn.textContent = EXPORT_LABEL;
-      }, 2500);
-    }
+    if (!result.cancelled) showExportResult(result);
   } catch (e) {
     showError(e.message);
-    btn.textContent = EXPORT_LABEL;
   } finally {
+    wakeLock?.release().catch(() => {});
+    btn.textContent = EXPORT_LABEL;
+    document.getElementById("exportHint").style.display = "none";
     exportInProgress = false;
     setNavigationLocked(false);
   }
@@ -1198,6 +1342,7 @@ function waitForPlaybackToStop() {
 
 /* ---------- Nawigacja między ekranami ---------- */
 let currentScreen = 1;
+const STEP_NAMES = ["Trasa", "Punkty i wygląd", "Animacja", "Wideo"];
 
 async function goToScreen(n) {
   if (exportInProgress) return;
@@ -1206,9 +1351,16 @@ async function goToScreen(n) {
   cancelPlayback();
   await waitForPlaybackToStop();
   currentScreen = n;
+  hideError();
   for (let i = 1; i <= 4; i++) {
     document.getElementById(`screen${i}`).style.display = i === n ? "block" : "none";
+    const step = document.getElementById(`stepperItem${i}`);
+    step.classList.toggle("active", i === n);
+    step.classList.toggle("done", i < n);
+    if (i === n) step.setAttribute("aria-current", "step"); else step.removeAttribute("aria-current");
   }
+  document.getElementById("stepperLabel").textContent = `Krok ${n} z 4: ${STEP_NAMES[n - 1]}`;
+  updateDurationInfo();
   window.scrollTo({ top: 0, behavior: "instant" });
   if (n === 2 && map && currentRoute) {
     stageMode = "static"; // wracamy z animacji - pokaż statyczną trasę, nie ostatnią klatkę
@@ -1237,6 +1389,7 @@ async function resetProject() {
   waypointFeatures = [];
   lastTimeline = null;
   stageMode = "static";
+  clearExportResult();
 
   document.getElementById("linkInput").value = "";
   document.getElementById("photosList").textContent = "";
@@ -1260,6 +1413,7 @@ document.querySelectorAll(".options-toggle").forEach((btn) => {
     const target = document.getElementById(btn.dataset.target);
     const isHidden = target.style.display === "none";
     target.style.display = isHidden ? "block" : "none";
+    btn.setAttribute("aria-expanded", String(isHidden));
     btn.textContent = btn.textContent.replace(isHidden ? "▾" : "▴", isHidden ? "▴" : "▾");
   });
 });
@@ -1278,7 +1432,10 @@ routeColor = COLOR_PALETTE[3 * 8 + 1]; // pomarańczowawy, zbliżony do dotychcz
 
 function applyRouteColor(color) {
   routeColor = color;
-  document.querySelectorAll(".color-swatch").forEach((el) => el.classList.toggle("active", el.dataset.color === color));
+  document.querySelectorAll(".color-swatch").forEach((el) => {
+    el.classList.toggle("active", el.dataset.color === color);
+    el.setAttribute("aria-pressed", String(el.dataset.color === color));
+  });
   const toggle = document.getElementById("colorSwatchToggle");
   if (toggle) toggle.style.background = color;
   if (map && currentRoute && stageMode === "static") renderStatic(); // linia trasy jest rysowana na scenie
@@ -1287,9 +1444,12 @@ function applyRouteColor(color) {
 function buildColorPickerUI() {
   const container = document.getElementById("colorPicker");
   container.innerHTML = "";
-  COLOR_PALETTE.forEach((color) => {
+  COLOR_PALETTE.forEach((color, index) => {
     const btn = document.createElement("button");
+    btn.type = "button";
     btn.className = "color-swatch" + (color === routeColor ? " active" : "");
+    btn.setAttribute("aria-label", `Kolor ${index + 1} z ${COLOR_PALETTE.length}`);
+    btn.setAttribute("aria-pressed", String(color === routeColor));
     btn.dataset.color = color;
     btn.style.background = color;
     btn.addEventListener("click", () => {
@@ -1303,7 +1463,9 @@ function buildColorPickerUI() {
 
 document.getElementById("colorSwatchToggle").addEventListener("click", () => {
   const picker = document.getElementById("colorPicker");
-  picker.style.display = picker.style.display === "none" ? "grid" : "none";
+  const open = picker.style.display === "none";
+  picker.style.display = open ? "grid" : "none";
+  document.getElementById("colorSwatchToggle").setAttribute("aria-expanded", String(open));
 });
 
 /* ---------- Proporcje wideo ---------- */
@@ -1424,3 +1586,23 @@ document.getElementById("clearStoredDataBtn").addEventListener("click", () => {
   info.textContent = "Usunięto zapamiętane lokalizacje plików i ustawienia z tej przeglądarki.";
 });
 
+
+/* ---------- Drobne ułatwienia ---------- */
+document.getElementById("errorCloseBtn").addEventListener("click", hideError);
+
+// "Wklej ze schowka": na telefonie przytrzymywanie pola i wybieranie "Wklej" to
+// kilka ruchów; przycisk robi to jednym. Pokazujemy go tylko tam, gdzie
+// przeglądarka pozwala czytać schowek.
+const pasteBtn = document.getElementById("pasteLinkBtn");
+if (navigator.clipboard?.readText) {
+  pasteBtn.style.display = "block";
+  pasteBtn.addEventListener("click", async () => {
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (text) document.getElementById("linkInput").value = text;
+      else showError("Schowek jest pusty. Skopiuj najpierw link do trasy z Google Maps.");
+    } catch {
+      showError("Przeglądarka nie pozwoliła odczytać schowka. Wklej link ręcznie w pole powyżej.");
+    }
+  });
+}

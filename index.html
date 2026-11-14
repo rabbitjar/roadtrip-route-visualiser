@@ -12,23 +12,49 @@
 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' https://tiles.openfreemap.org https://router.project-osrm.org https://photon.komoot.io; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
 <meta name="referrer" content="no-referrer" />
-<title>Moto Route — podgląd trasy</title>
+<title>Moto Route — film z trasy na mapie</title>
+<meta name="description" content="Zamień trasę z Google Maps albo zdjęcia z telefonu w animowany film z przejazdu na mapie — gotowy na Stories, Reels i TikToka. Działa w przeglądarce, bez instalacji i bez konta." />
+<meta name="theme-color" content="#2d6a4f" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Moto Route — film z trasy na mapie" />
+<meta property="og:description" content="Wklej trasę z Google Maps albo wgraj zdjęcia z wyjazdu i pobierz animowany film z przejazdu na mapie." />
+<meta property="og:locale" content="pl_PL" />
+<link rel="icon" href="favicon.svg" type="image/svg+xml" />
 <link href="vendor/maplibre-gl.css" rel="stylesheet" />
 <link href="css/style.css" rel="stylesheet" />
 </head>
 <body>
 
-<div id="screen1" class="screen">
-  <h1>Podgląd trasy motocyklowej</h1>
+<nav class="stepper" aria-label="Postęp">
+  <ol>
+    <li id="stepperItem1" class="active" aria-current="step"><span class="sr-only">Krok 1</span></li>
+    <li id="stepperItem2"><span class="sr-only">Krok 2</span></li>
+    <li id="stepperItem3"><span class="sr-only">Krok 3</span></li>
+    <li id="stepperItem4"><span class="sr-only">Krok 4</span></li>
+  </ol>
+  <p id="stepperLabel" aria-live="polite">Krok 1 z 4: Trasa</p>
+</nav>
 
-  <div class="source-tabs">
-    <button type="button" class="tab-btn active" data-tab="link">Link Google Maps</button>
-    <button type="button" class="tab-btn" data-tab="photos">Zdjęcia/filmy z telefonu</button>
+<div id="errorBox" class="card error-card" style="display:none" role="alert">
+  <div class="error-head">
+    <h2>Błąd</h2>
+    <button type="button" id="errorCloseBtn" class="error-close" aria-label="Zamknij komunikat">✕</button>
+  </div>
+  <div class="err" id="errorText"></div>
+</div>
+
+<div id="screen1" class="screen">
+  <h1>Film z trasy na mapie</h1>
+
+  <div class="source-tabs" role="tablist" aria-label="Źródło trasy">
+    <button type="button" class="tab-btn active" data-tab="link" role="tab" aria-selected="true">Link Google Maps</button>
+    <button type="button" class="tab-btn" data-tab="photos" role="tab" aria-selected="false">Zdjęcia/filmy z telefonu</button>
   </div>
 
   <div id="sourceLink" class="source-panel">
     <p class="sub">Wklej pełny link Google Maps z trasą. Krótkie linki (maps.app.goo.gl) otwórz najpierw w przeglądarce i skopiuj pełny URL z paska adresu.</p>
-    <textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..."></textarea>
+    <textarea id="linkInput" placeholder="https://www.google.com/maps/dir/..." aria-label="Link Google Maps z trasą"></textarea>
+    <button type="button" id="pasteLinkBtn" class="secondary-btn" style="display:none">Wklej ze schowka</button>
     <button id="step1NextBtn">Dalej: Wyciągnij punkty →</button>
   </div>
 
@@ -75,7 +101,7 @@
     <div class="stat"><span>Szac. czas jazdy</span><strong id="statDur">—</strong></div>
   </div>
 
-  <button class="options-toggle" data-target="opts2">⚙ Opcje (zdjęcia, ikona, kolor, format) ▾</button>
+  <button type="button" class="options-toggle" data-target="opts2" aria-expanded="false">⚙ Opcje (zdjęcia, ikona, kolor, format) ▾</button>
   <div id="opts2" class="options-panel" style="display:none">
     <div id="photosCard" class="card">
       <h2>Zdjęcia/filmy na przystankach (opcjonalnie)</h2>
@@ -87,17 +113,17 @@
     </div>
     <div class="card">
       <h2>Kolor trasy</h2>
-      <button type="button" id="colorSwatchToggle" class="color-current-btn"></button>
+      <button type="button" id="colorSwatchToggle" class="color-current-btn" aria-label="Zmień kolor trasy" aria-expanded="false"></button>
       <div id="colorPicker" class="color-picker" style="display:none; margin-top:8px;"></div>
     </div>
     <div class="card">
       <h2>Proporcje wideo</h2>
-      <select id="ratioSelect" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
+      <select id="ratioSelect" aria-label="Proporcje wideo" style="width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:0.95rem;">
         <option value="9:16" selected>9:16 — Stories / Reels / TikTok</option>
         <option value="1:1">1:1 — kwadrat</option>
         <option value="2:3">2:3 — portret</option>
         <option value="3:4">3:4 — portret</option>
-        <option value="19.5:9">Pełny ekran telefonu (19,5:9)</option>
+        <option value="19.5:9">9:19,5 — pełny ekran telefonu</option>
       </select>
     </div>
   </div>
@@ -111,42 +137,43 @@
 <div id="screen3" class="screen" style="display:none">
   <h1>Animacja</h1>
   <button id="playAnimBtn">▶ Odtwórz animację</button>
+  <p class="duration-info sub" aria-live="polite"></p>
 
-  <button class="options-toggle" data-target="opts3">⚙ Opcje (prędkość, nerwowość, rozmiar) ▾</button>
+  <button type="button" class="options-toggle" data-target="opts3" aria-expanded="false">⚙ Opcje (prędkość, nerwowość, rozmiar) ▾</button>
   <div id="opts3" class="options-panel" style="display:none">
     <div class="card">
       <h2>Prędkość posuwania znacznika <span class="reset-default" data-reset="speed" title="Przywróć wartość domyślną">(domyślnie: 1)</span></h2>
       <div class="combo-control">
-        <input type="text" inputmode="decimal" id="speedInput" value="1">
-        <input type="range" id="speedSlider" min="2" max="50" step="1" value="10">
+        <input type="text" inputmode="decimal" id="speedInput" aria-label="Prędkość — wartość" value="1">
+        <input type="range" id="speedSlider" aria-label="Prędkość — suwak" min="2" max="50" step="1" value="10">
       </div>
     </div>
     <div class="card">
       <h2>Nerwowość ruchu (0-10) <span class="reset-default" data-reset="wobble" title="Przywróć wartość domyślną">(domyślnie: 0)</span></h2>
       <div class="combo-control">
-        <input type="text" inputmode="decimal" id="wobbleInput" value="0">
-        <input type="range" id="wobbleSlider" min="0" max="10" step="1" value="0">
+        <input type="text" inputmode="decimal" id="wobbleInput" aria-label="Nerwowość ruchu — wartość" value="0">
+        <input type="range" id="wobbleSlider" aria-label="Nerwowość ruchu — suwak" min="0" max="10" step="1" value="0">
       </div>
     </div>
     <div class="card">
       <h2>Rozmiar ikony <span class="reset-default" data-reset="size" title="Przywróć wartość domyślną">(domyślnie: 0.4)</span></h2>
       <div class="combo-control">
-        <input type="text" inputmode="decimal" id="sizeInput" value="0.4">
-        <input type="range" id="sizeSlider" min="2" max="8" step="1" value="4">
+        <input type="text" inputmode="decimal" id="sizeInput" aria-label="Rozmiar ikony — wartość" value="0.4">
+        <input type="range" id="sizeSlider" aria-label="Rozmiar ikony — suwak" min="2" max="8" step="1" value="4">
       </div>
     </div>
     <div class="card">
       <h2>Czas powiększania zdjęcia (s) <span class="reset-default" data-reset="grow" title="Przywróć wartość domyślną">(domyślnie: 1.5)</span></h2>
       <div class="combo-control">
-        <input type="text" inputmode="decimal" id="growInput" value="1.5">
-        <input type="range" id="growSlider" min="2" max="50" step="1" value="15">
+        <input type="text" inputmode="decimal" id="growInput" aria-label="Czas powiększania zdjęcia — wartość" value="1.5">
+        <input type="range" id="growSlider" aria-label="Czas powiększania zdjęcia — suwak" min="2" max="50" step="1" value="15">
       </div>
     </div>
     <div class="card">
       <h2>Czas wyświetlania zdjęcia w pełnym ekranie (s) <span class="reset-default" data-reset="hold" title="Przywróć wartość domyślną">(domyślnie: 1)</span></h2>
       <div class="combo-control">
-        <input type="text" inputmode="decimal" id="holdInput" value="1">
-        <input type="range" id="holdSlider" min="2" max="50" step="1" value="10">
+        <input type="text" inputmode="decimal" id="holdInput" aria-label="Czas wyświetlania zdjęcia — wartość" value="1">
+        <input type="range" id="holdSlider" aria-label="Czas wyświetlania zdjęcia — suwak" min="2" max="50" step="1" value="10">
       </div>
     </div>
   </div>
@@ -158,19 +185,24 @@
 </div>
 
 <div id="screen4" class="screen" style="display:none">
-  <h1>Pobierz wideo</h1>
+  <h1>Nagraj i pobierz wideo</h1>
   <p class="sub">Nagranie użyje ustawień z poprzedniego kroku, w tym samym formacie co podgląd animacji.</p>
-  <button id="exportBtn">Pobierz wideo</button>
+  <p class="duration-info sub"></p>
+  <button id="exportBtn">● Nagraj wideo</button>
+  <p id="exportHint" class="hint-box" style="display:none" role="status">Nagrywanie trwa tyle, ile film. Zostaw tę kartę na wierzchu i nie blokuj ekranu — inaczej nagranie zostanie przerwane.</p>
+  <div id="exportResult" class="card" style="display:none">
+    <h2>Gotowe</h2>
+    <video id="exportPreview" class="export-preview" controls playsinline muted aria-label="Podgląd nagranego wideo"></video>
+    <p id="exportResultInfo" class="sub"></p>
+    <button type="button" id="shareBtn" style="display:none">Udostępnij / zapisz w galerii</button>
+    <button type="button" id="saveBtn">Zapisz plik</button>
+  </div>
   <div class="nav-row">
     <button class="secondary-btn" id="step4BackBtn">← Wstecz</button>
     <button class="secondary-btn" id="restartBtn">Zacznij od nowa</button>
   </div>
 </div>
 
-<div id="errorBox" class="card" style="display:none">
-  <h2 style="color:#b3261e">Błąd</h2>
-  <div class="err" id="errorText"></div>
-</div>
 
 <div id="mapWrap">
   <div id="map"></div>
