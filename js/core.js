@@ -15,6 +15,17 @@ function parseGoogleMapsLink(url) {
   if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
     throw new Error("Obsługuję tylko linki http(s) do Google Maps.");
   }
+  // Krótkie linki nie zawierają współrzędnych — trzeba je najpierw rozwinąć.
+  // Strona nie może zrobić tego sama (przeglądarka blokuje odczyt przekierowania
+  // z obcej domeny), więc zamiast ogólnego "nie znalazłem współrzędnych"
+  // mówimy dokładnie, co zrobić.
+  if (/(^|\.)goo\.gl$/i.test(parsedUrl.hostname)) {
+    throw new Error(
+      "To krótki link (" + parsedUrl.hostname + "), który nie zawiera punktów trasy.\n" +
+      "Otwórz go w przeglądarce, poczekaj, aż mapa się załaduje, i skopiuj pełny adres z paska adresu " +
+      "(zaczyna się od https://www.google.com/maps/dir/…)."
+    );
+  }
   const { pathname } = parsedUrl;
 
   const pathMatch = pathname.match(/\/maps\/dir\/(.+?)\/data=/);
@@ -333,6 +344,23 @@ function timelineStateAt(timeline, t) {
   };
 }
 
+// "5 h 20 min" zamiast "5.3 h"
+function formatDuration(seconds) {
+  const totalMin = Math.max(0, Math.round((Number(seconds) || 0) / 60));
+  const h = Math.floor(totalMin / 60), m = totalMin % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+function clampNumber(v, min, max) {
+  return Math.min(Math.max(v, min), max);
+}
+
+// liczba po polsku: przecinek dziesiętny, bez zbędnych zer ("12,4", "7")
+function formatDecimalPl(v, digits = 1) {
+  return (Math.round(v * 10 ** digits) / 10 ** digits).toString().replace(".", ",");
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseGoogleMapsLink, haversineMeters, buildCumulativeDistances, indexAtDistance,
@@ -340,5 +368,6 @@ if (typeof module !== "undefined" && module.exports) {
     resampleByDistance, distanceAlongForWaypoint, isValidLatLng, parseLatLngPaste,
     formatPlaceLabel, parseDecimalInput, formatNum, escapeHtml, safeDecodeURIComponent,
     waypointFractionsFromLegs, monotonicWaypointFractions, buildTimeline, timelineStateAt,
+    formatDuration, clampNumber, formatDecimalPl,
   };
 }
