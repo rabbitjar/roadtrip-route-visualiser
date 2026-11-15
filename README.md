@@ -52,6 +52,7 @@ Repozytorium można opublikować bez budowania, np. przez GitHub Pages
 | `js/features.js` | GPX, muzyka, link do trasy, zapis projektu, PWA |
 | `vendor/` | biblioteki zewnętrzne trzymane lokalnie (wersje i licencje w `vendor/README.md`) |
 | `sw.js`, `manifest.webmanifest`, `icons/` | tryb aplikacji (PWA) |
+| `server/resolve.php` | opcjonalny skrypt rozwijający krótkie linki Google Maps |
 | `tests/` | testy jednostkowe i end-to-end |
 
 ## Testy
@@ -96,6 +97,34 @@ wymienić — wystarczy zmiana w `js/config.js`:
 3. Dopisz nowy host do `connect-src` w nagłówku Content-Security-Policy
    w `index.html`, inaczej przeglądarka zablokuje zapytania.
 
+### Krótkie linki Google Maps (opcjonalny skrypt na serwerze z PHP)
+
+Aplikacja Google Maps udostępnia trasy jako krótkie linki (`maps.app.goo.gl/…`),
+które nie zawierają punktów trasy. Przeglądarka nie pozwala stronie sprawdzić,
+dokąd taki link prowadzi, więc robi to mały skrypt `server/resolve.php` na
+dowolnym hostingu z PHP i rozszerzeniem cURL (np. HostGator).
+
+Wdrożenie:
+
+1. Wgraj `server/resolve.php` na serwer (cPanel → Menedżer plików albo FTP),
+   np. do `public_html/server/resolve.php`.
+2. W pliku uzupełnij `$ALLOWED_ORIGINS` adresem, pod którym działa aplikacja
+   (np. `'https://twoja-domena.pl'`). Gdy aplikacja stoi na tej samej domenie co
+   skrypt, lista może zostać pusta.
+3. W `js/config.js` ustaw `shortLinkResolver`:
+   - ta sama domena: `"server/resolve.php"`,
+   - inna domena: pełny adres `"https://twoja-domena.pl/server/resolve.php"`
+     i dopisz `https://twoja-domena.pl` do `connect-src` w CSP w `index.html`.
+4. Sprawdź: otwórz w przeglądarce
+   `https://twoja-domena.pl/server/resolve.php?url=https://maps.app.goo.gl/TWÓJ_LINK`
+   — powinien pojawić się JSON z pełnym adresem `https://www.google.com/maps/dir/…`.
+
+Skrypt łączy się wyłącznie z hostami Google, odpowiada tylko wskazanym stronom
+i ma limit 30 zapytań na minutę z jednego adresu IP. Nie zapisuje linków.
+
+Gdy `shortLinkResolver` jest pusty, aplikacja działa jak dotąd: prosi o wklejenie
+pełnego adresu.
+
 ## Prywatność i bezpieczeństwo
 
 - Pliki użytkownika są przetwarzane wyłącznie w przeglądarce. Na zewnątrz
@@ -114,9 +143,9 @@ vulnerability* w repozytorium.
 
 ## Ograniczenia
 
-- Krótkie linki Google (`maps.app.goo.gl`) trzeba najpierw otworzyć
-  w przeglądarce i skopiować pełny adres — strona bez własnego serwera nie może
-  ich rozwinąć.
+- Krótkie linki Google (`maps.app.goo.gl`) działają dopiero po wdrożeniu skryptu
+  `server/resolve.php` (opis wyżej). Bez niego trzeba otworzyć link
+  w przeglądarce i skopiować pełny adres.
 - Eksport klatkowy wymaga przeglądarki z WebCodecs i koderem H.264 (aktualne
   Chrome, Edge, Safari). W pozostałych aplikacja automatycznie nagrywa film na
   żywo — trwa to tyle, ile film, i karta musi zostać na wierzchu.

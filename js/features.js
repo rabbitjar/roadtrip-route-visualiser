@@ -525,6 +525,12 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
   });
 }
 
+// gdy skonfigurowano rozwijanie krótkich linków, instrukcja nie każe już kopiować pełnego adresu
+if (APP_CONFIG.shortLinkResolver) {
+  document.getElementById("linkHelp").textContent =
+    "Wklej link Google Maps z trasą — pełny albo krótki (maps.app.goo.gl), np. skopiowany przyciskiem „Udostępnij” w aplikacji Google Maps.";
+}
+
 /* ---------- Start ---------- */
 updateMusicUi();
 updateFramingUi();

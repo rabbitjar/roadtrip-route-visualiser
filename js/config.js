@@ -19,6 +19,12 @@ const APP_CONFIG = Object.freeze({
     timeoutMs: 20000,
     maxAttempts: 3,
   }),
+  // Adres skryptu rozwijającego krótkie linki Google Maps (server/resolve.php).
+  // Pusty = funkcja wyłączona (aplikacja prosi wtedy o wklejenie pełnego linku).
+  //  - aplikacja i skrypt na tym samym serwerze:  "server/resolve.php"
+  //  - skrypt na innej domenie:  "https://twoja-domena.pl/server/resolve.php"
+  //    (wtedy dopisz tę domenę do connect-src w CSP i do $ALLOWED_ORIGINS w skrypcie)
+  shortLinkResolver: "",
   // wyszukiwarka miejsc zgodna z API Photon ("/api/?q=" i "/reverse?lon=&lat=")
   placeSearch: "https://photon.komoot.io",
 });

@@ -205,6 +205,14 @@ test("link do trasy: kodowanie w obie strony i walidacja", () => {
   assert.equal(odd.waypoints[1].name.length, 80);
 });
 
+test("isShortMapsLink", () => {
+  assert.equal(core.isShortMapsLink("https://maps.app.goo.gl/AbCd123"), true);
+  assert.equal(core.isShortMapsLink("https://goo.gl/maps/AbCd123"), true);
+  assert.equal(core.isShortMapsLink("https://www.google.com/maps/dir/A/B"), false);
+  assert.equal(core.isShortMapsLink("https://evilgoo.gl/x"), false);
+  assert.equal(core.isShortMapsLink("nie link"), false);
+});
+
 test("formatowanie", () => {
   assert.equal(core.formatDuration(19200), "5 h 20 min");
   assert.equal(core.formatDuration(3600), "1 h");
