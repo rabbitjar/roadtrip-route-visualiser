@@ -91,6 +91,38 @@ async function fetchRoadRoute(waypoints, mode = "driving") {
   );
 }
 
+// Rozwija krótki link Google Maps przez własny skrypt (server/resolve.php) —
+// sama przeglądarka nie może odczytać przekierowania z obcej domeny.
+async function resolveShortLink(shortUrl) {
+  const fallback =
+    "Nie udało się rozwinąć krótkiego linku. Otwórz go w przeglądarce i wklej pełny adres z paska adresu " +
+    "(zaczyna się od https://www.google.com/maps/dir/…).";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let res, data;
+  try {
+    const endpoint = new URL(APP_CONFIG.shortLinkResolver, location.href);
+    endpoint.searchParams.set("url", shortUrl);
+    res = await fetch(endpoint, { referrerPolicy: "no-referrer", credentials: "omit", signal: controller.signal });
+    data = await res.json();
+  } catch {
+    throw new Error(fallback);
+  } finally {
+    clearTimeout(timer);
+  }
+  // odpowiedź skryptu też sprawdzamy: przyjmujemy wyłącznie adres https w domenie Google
+  let resolved = null;
+  try {
+    resolved = typeof data?.url === "string" ? new URL(data.url) : null;
+  } catch {
+    resolved = null;
+  }
+  if (!res.ok || !resolved || resolved.protocol !== "https:" || !/(^|\.)google\.[a-z.]{2,6}$/i.test(resolved.hostname)) {
+    throw new Error(typeof data?.error === "string" && res.status !== 403 ? `${data.error}\n${fallback}` : fallback);
+  }
+  return resolved.href;
+}
+
 // trasa dla wybranego sposobu podróży: drogami (serwer routingu) albo w linii prostej (lokalnie)
 async function computeRoute(waypoints, mode) {
   if (mode === "straight") {
@@ -1153,8 +1185,14 @@ document.getElementById("step1NextBtn").addEventListener("click", async () => {
   const btn = document.getElementById("step1NextBtn");
   btn.disabled = true;
   try {
+    let fullUrl = url;
+    if (isShortMapsLink(url) && APP_CONFIG.shortLinkResolver) {
+      btn.textContent = "Rozwijam krótki link…";
+      fullUrl = await resolveShortLink(url);
+      document.getElementById("linkInput").value = fullUrl; // widać, co faktycznie zostało użyte
+    }
     btn.textContent = "Wyciągam punkty…";
-    const parsed = parseGoogleMapsLink(url);
+    const parsed = parseGoogleMapsLink(fullUrl);
     // link z trasą pieszą/rowerową sam podpowiada sposób podróży (o ile nie wybrano go ręcznie)
     if (!travelModeTouched && (parsed.travelMode === "cycling" || parsed.travelMode === "walking")) {
       setTravelMode(parsed.travelMode);

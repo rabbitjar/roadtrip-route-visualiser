@@ -78,6 +78,18 @@ async function mockNetwork(context, calls, state) {
     }
     return route.abort();
   });
+  // konfiguracja z włączonym rozwijaniem krótkich linków + podstawiony skrypt serwera
+  await context.route(/\/js\/config\.js$/, (route) => {
+    const source = fs.readFileSync(path.join(ROOT, "js/config.js"), "utf8");
+    route.fulfill({ contentType: "text/javascript", body: source.replace('shortLinkResolver: ""', 'shortLinkResolver: "server/resolve.php"') });
+  });
+  await context.route(/\/server\/resolve\.php/, (route) => {
+    const short = new URL(route.request().url()).searchParams.get("url");
+    calls.push("resolver:" + short);
+    if (short.endsWith("/zly")) return json(route, { url: "https://evil.example/maps/dir/x" });
+    if (short.endsWith("/brak")) return json(route, { error: "Google nie zna tego linku." }, 404);
+    return json(route, { url: state.fullLink });
+  });
 }
 
 /* ---------- mini-framework ---------- */
@@ -100,7 +112,7 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, serviceWorkers: "block", acceptDownloads: true });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const calls = [];
-  const state = { routingStatus: 200 };
+  const state = { routingStatus: 200, fullLink: LINK };
   await mockNetwork(context, calls, state);
   const page = await context.newPage();
   const problems = [];
@@ -137,6 +149,25 @@ async function main() {
     for (let i = 0; i < d.length; i += 16) if (d[i] > 200 && d[i + 1] > 90 && d[i + 1] < 170 && d[i + 2] < 90) return true;
     return false;
   }));
+
+  /* --- krótki link rozwijany przez skrypt serwera --- */
+  await page.click("#step2BackBtn");
+  await page.fill("#linkInput", "https://maps.app.goo.gl/AbCd1234");
+  await page.click("#step1NextBtn");
+  await onScreen2(page);
+  check("krótki link: rozwinięty przez skrypt i użyty", (await page.inputValue("#linkInput")) === LINK && (await page.locator(".wp-name").count()) === 3 && calls.includes("resolver:https://maps.app.goo.gl/AbCd1234"));
+  await page.click("#step2BackBtn");
+  await page.fill("#linkInput", "https://maps.app.goo.gl/zly");
+  await page.click("#step1NextBtn");
+  await page.waitForSelector("#errorBox", { state: "visible", timeout: 10000 });
+  check("krótki link: adres spoza Google ze skryptu jest odrzucany", /Nie udało się rozwinąć/.test(await page.textContent("#errorText")) && (await page.isHidden("#screen2")));
+  await page.fill("#linkInput", "https://maps.app.goo.gl/brak");
+  await page.click("#step1NextBtn");
+  await page.waitForFunction(() => /Google nie zna/.test(document.getElementById("errorText").textContent), null, { timeout: 10000 });
+  check("krótki link: błąd ze skryptu pokazany z instrukcją", /pełny adres/.test(await page.textContent("#errorText")));
+  await page.fill("#linkInput", LINK);
+  await page.click("#step1NextBtn");
+  await onScreen2(page);
 
   /* --- awaria routera --- */
   await page.click("#step2BackBtn");

@@ -19,7 +19,7 @@ function parseGoogleMapsLink(url) {
   // Strona nie może zrobić tego sama (przeglądarka blokuje odczyt przekierowania
   // z obcej domeny), więc zamiast ogólnego "nie znalazłem współrzędnych"
   // mówimy dokładnie, co zrobić.
-  if (/(^|\.)goo\.gl$/i.test(parsedUrl.hostname)) {
+  if (isShortMapsLink(url)) {
     throw new Error(
       "To krótki link (" + parsedUrl.hostname + "), który nie zawiera punktów trasy.\n" +
       "Otwórz go w przeglądarce, poczekaj, aż mapa się załaduje, i skopiuj pełny adres z paska adresu " +
@@ -344,6 +344,15 @@ function timelineStateAt(timeline, t) {
   };
 }
 
+// krótki link Google Maps (maps.app.goo.gl/…, goo.gl/maps/…) — bez współrzędnych w adresie
+function isShortMapsLink(url) {
+  try {
+    return /(^|\.)goo\.gl$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 // "5 h 20 min" zamiast "5.3 h"
 function formatDuration(seconds) {
   if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) return "—";
@@ -570,6 +579,6 @@ if (typeof module !== "undefined" && module.exports) {
     waypointFractionsFromLegs, monotonicWaypointFractions, buildTimeline, timelineStateAt,
     formatDuration, clampNumber, formatDecimalPl,
     greatCirclePath, buildStraightRoute, buildGpxRoute, encodeSharedRoute, decodeSharedRoute,
-    smoothstep, followCameraBlend, wrapText, TRAVEL_MODES,
+    smoothstep, followCameraBlend, wrapText, TRAVEL_MODES, isShortMapsLink,
   };
 }
